@@ -28,8 +28,7 @@ static bool util_fs_exists(const char* path) {
     DWORD file_attr = GetFileAttributesA(path);
     return file_attr != INVALID_FILE_ATTRIBUTES;
 #else
-    struct stat buffer;
-    return (stat(path, &buffer) == 0 && S_ISREG(buffer.st_mode));
+    return access(path, F_OK) != -1;
 #endif
 }
 
