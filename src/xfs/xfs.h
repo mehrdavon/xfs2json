@@ -11,6 +11,9 @@
 #define XFS_MAGIC 0x534658 // "XFS\0"
 #define XFS_MAJOR_VERSION 0x10
 
+#define XFS_DEF_SIZE 8
+#define XFS_PROPERTY_DEF_SIZE 40
+
 
 typedef enum {
     XFS_TYPE_UNDEFINED = 0x0,
@@ -234,6 +237,6 @@ xfs* xfs_from_json(const cJSON* json);
 
 bool is_xfs_file(const char* path);
 
-const char* xfs_get_property_name(xfs* xfs, const xfs_property_def* prop);
+const char* xfs_get_property_name(const xfs* xfs, const xfs_property_def* prop);
 
 #endif // XFS_H

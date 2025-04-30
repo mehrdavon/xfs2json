@@ -1,6 +1,10 @@
-#include <stdio.h>
-
 #include "xfs.h"
+#include "util/binary_writer.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 
 static cJSON* xfs_object_to_json(const xfs_object* obj);
 static cJSON* xfs_data_to_json(xfs_type_t type, const xfs_data* data);
@@ -10,6 +14,19 @@ static cJSON* xfs_json_create_float3(const float* values);
 static cJSON* xfs_json_create_float4(const float* values);
 static cJSON* xfs_json_create_matrix(const float* values, int m, int n);
 static cJSON* xfs_json_create_soa_vector3(const xfs_soa_vector3* value);
+
+static double xfs_json_get_number(const cJSON* json, const char* key);
+static double xfs_json_get_array_number(const cJSON* json, int index);
+static void xfs_json_get_float2(const cJSON* json, const char* key, float* values);
+static void xfs_json_get_float3(const cJSON* json, const char* key, float* values);
+static void xfs_json_get_float4(const cJSON* json, const char* key, float* values);
+static void xfs_json_get_matrix(const cJSON* json, const char* key, float* values, int m, int n);
+static void xfs_json_get_soa_vector3(const cJSON* json, const char* key, xfs_soa_vector3* value);
+#define xfs_json_get_t(type, json, key) (type)xfs_json_get_number(json, key)
+#define xfs_json_get_array_t(type, json, index) (type)xfs_json_get_array_number(json, index)
+
+static xfs_object* xfs_object_from_json(const cJSON* json, const xfs* xfs);
+static bool xfs_data_from_json(const cJSON* json, xfs_type_t type, xfs_data* data, const xfs* xfs);
 
 cJSON* xfs_to_json(const xfs* xfs) {
     cJSON* json = cJSON_CreateObject();
@@ -41,12 +58,155 @@ cJSON* xfs_to_json(const xfs* xfs) {
 
     cJSON_AddItemToObject(json, "root", xfs_object_to_json(xfs->root));
     cJSON_AddItemToObject(json, "$defs", defs);
+    cJSON_AddNumberToObject(json, "$version", xfs->header.minor_version);
 
     return json;
 }
 
 xfs* xfs_from_json(const cJSON* json) {
-    return NULL;
+    xfs* xfs = malloc(sizeof(struct xfs));
+    if (xfs == NULL) {
+        return NULL;
+    }
+
+    const cJSON* defs = cJSON_GetObjectItem(json, "$defs");
+    const cJSON* root = cJSON_GetObjectItem(json, "root");
+
+    if (defs == NULL || root == NULL) {
+        free(xfs);
+        return NULL;
+    }
+
+    if (!cJSON_IsArray(defs)) {
+        free(xfs);
+        return NULL;
+    }
+
+    xfs->header.magic = XFS_MAGIC;
+    xfs->header.major_version = XFS_MAJOR_VERSION;
+    xfs->header.minor_version = (uint16_t)cJSON_GetNumberValue(cJSON_GetObjectItem(json, "$version"));
+    xfs->header.def_count = cJSON_GetArraySize(defs);
+
+    // Compute the size of the 'defs' buffer
+    size_t def_size = 0;
+
+    def_size += sizeof(uint32_t) * xfs->header.def_count;
+    def_size += XFS_DEF_SIZE * xfs->header.def_count;
+
+    size_t prop_count = 0;
+    size_t string_buffer_size = 0;
+
+    for (uint32_t i = 0; i < xfs->header.def_count; i++) {
+        const cJSON* def_json = cJSON_GetArrayItem(defs, i);
+        if (!cJSON_IsObject(def_json)) {
+            free(xfs);
+            return NULL;
+        }
+
+        const cJSON* props = cJSON_GetObjectItem(def_json, "props");
+        if (!cJSON_IsArray(props)) {
+            free(xfs);
+            return NULL;
+        }
+
+        def_size += XFS_PROPERTY_DEF_SIZE * cJSON_GetArraySize(props);
+        prop_count += cJSON_GetArraySize(props);
+
+        for (int j = 0; j < cJSON_GetArraySize(props); j++) {
+            const cJSON* prop_json = cJSON_GetArrayItem(props, j);
+            if (!cJSON_IsObject(prop_json)) {
+                free(xfs);
+                return NULL;
+            }
+
+            const char* name = cJSON_GetStringValue(cJSON_GetObjectItem(prop_json, "name"));
+            string_buffer_size += strlen(name) + 1; // +1 for null terminator
+        }
+    }
+
+    // Align the size to 16 bytes
+    size_t data_size = def_size + string_buffer_size;
+    data_size = (data_size + 15) & ~0x0F;
+    xfs->header.def_size = (int32_t)data_size;
+
+    xfs->data = malloc(data_size);
+    if (xfs->data == NULL) {
+        free(xfs);
+        return NULL;
+    }
+
+    memset(xfs->data, 0, data_size);
+
+    binary_writer* writer = binary_writer_create_buffer(xfs->data, data_size);
+    if (writer == NULL) {
+        free(xfs->data);
+        free(xfs);
+        return NULL;
+    }
+
+    for (uint32_t i = 0; i < xfs->header.def_count; i++) {
+        binary_writer_write_u32(writer, 0); // Placeholder for offset
+    }
+
+    size_t string_offset = def_size;
+
+    for (uint32_t i = 0; i < xfs->header.def_count; i++) {
+        const cJSON* def_json = cJSON_GetArrayItem(defs, i);
+        if (!cJSON_IsObject(def_json)) {
+            free(xfs->data);
+            free(xfs);
+            return NULL;
+        }
+
+        const cJSON* props = cJSON_GetObjectItem(def_json, "props");
+        if (!cJSON_IsArray(props)) {
+            free(xfs->data);
+            free(xfs);
+            return NULL;
+        }
+
+        // Write the offset
+        binary_writer_set_u32(writer, i * sizeof(uint32_t), (uint32_t)writer->buffer_pos);
+
+        // Write the data and properties
+        binary_writer_write_u32(writer, (uint32_t)cJSON_GetNumberValue(cJSON_GetObjectItem(def_json, "dti")));
+        binary_writer_write_s32(writer, cJSON_GetArraySize(props));
+
+        for (int j = 0; j < cJSON_GetArraySize(props); j++) {
+            const cJSON* prop_json = cJSON_GetArrayItem(props, j);
+            if (!cJSON_IsObject(prop_json)) {
+                free(xfs->data);
+                free(xfs);
+                return NULL;
+            }
+
+            const char* name = cJSON_GetStringValue(cJSON_GetObjectItem(prop_json, "name"));
+            const size_t length = strlen(name) + 1; // +1 for null terminator
+            binary_writer_write_u32(writer, (uint32_t)string_offset); // Name offset
+            binary_writer_write_at(writer, string_offset, name, length + 1);
+            string_offset += length;
+
+            binary_writer_write_u8(writer, (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(prop_json, "type")));
+            binary_writer_write_u8(writer, (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(prop_json, "attr")));
+
+            uint16_t bytes = (uint16_t)cJSON_GetNumberValue(cJSON_GetObjectItem(prop_json, "bytes"));
+            bytes |= (uint16_t)cJSON_IsTrue(cJSON_GetObjectItem(prop_json, "disable")) << 15;
+            binary_writer_write_u16(writer, bytes);
+        }
+    }
+
+    binary_writer_destroy(writer);
+
+    // Map the defs
+    xfs->defs = (xfs_def**)calloc(xfs->header.def_count, sizeof(xfs_def*));
+    const uint32_t* def_offsets = xfs->data;
+    for (int i = 0; i < xfs->header.def_count; i++) {
+        xfs->defs[i] = (xfs_def*)((uint8_t*)xfs->data + def_offsets[i]);
+    }
+
+    xfs->root = xfs_object_from_json(root, xfs);
+
+    return xfs;
 }
 
 cJSON* xfs_object_to_json(const xfs_object* obj) {
@@ -397,4 +557,448 @@ cJSON* xfs_json_create_soa_vector3(const xfs_soa_vector3* value) {
     cJSON_AddItemToObject(json, "y", xfs_json_create_float4(&value->y.x));
     cJSON_AddItemToObject(json, "z", xfs_json_create_float4(&value->z.x));
     return json;
+}
+
+double xfs_json_get_number(const cJSON* json, const char* key) {
+    if (key != NULL) {
+        json = cJSON_GetObjectItem(json, key);
+        if (json == NULL) {
+            return 0.0;
+        }
+    }
+
+    return cJSON_GetNumberValue(json);
+}
+
+double xfs_json_get_array_number(const cJSON* json, int index) {
+    const cJSON* item = cJSON_GetArrayItem(json, index);
+    if (item == NULL || !cJSON_IsNumber(item)) {
+        return 0.0;
+    }
+
+    return cJSON_GetNumberValue(item);
+}
+
+void xfs_json_get_float2(const cJSON* json, const char* key, float* values) {
+    if (key != NULL) {
+        json = cJSON_GetObjectItem(json, key);
+        if (json == NULL || !cJSON_IsObject(json)) {
+            return;
+        }
+    }
+
+    values[0] = xfs_json_get_t(float, json, "x");
+    values[1] = xfs_json_get_t(float, json, "y");
+}
+
+void xfs_json_get_float3(const cJSON* json, const char* key, float* values) {
+    if (key != NULL) {
+        json = cJSON_GetObjectItem(json, key);
+        if (json == NULL || !cJSON_IsObject(json)) {
+            return;
+        }
+    }
+
+    values[0] = xfs_json_get_t(float, json, "x");
+    values[1] = xfs_json_get_t(float, json, "y");
+    values[2] = xfs_json_get_t(float, json, "z");
+}
+
+void xfs_json_get_float4(const cJSON* json, const char* key, float* values) {
+    if (key != NULL) {
+        json = cJSON_GetObjectItem(json, key);
+        if (json == NULL || !cJSON_IsObject(json)) {
+            return;
+        }
+    }
+
+    values[0] = xfs_json_get_t(float, json, "x");
+    values[1] = xfs_json_get_t(float, json, "y");
+    values[2] = xfs_json_get_t(float, json, "z");
+    values[3] = xfs_json_get_t(float, json, "w");
+}
+
+void xfs_json_get_matrix(const cJSON* json, const char* key, float* values, int m, int n) {
+    if (key != NULL) {
+        json = cJSON_GetObjectItem(json, key);
+        if (json == NULL || !cJSON_IsObject(json)) {
+            return;
+        }
+    }
+
+    for (int i = 0; i < m; i++) {
+        for (int j = 0; j < n; j++) {
+            char string_buffer[16];
+            snprintf(string_buffer, sizeof(string_buffer), "m%d%d", i, j);
+            values[i * n + j] = xfs_json_get_t(float, json, string_buffer);
+        }
+    }
+}
+
+void xfs_json_get_soa_vector3(const cJSON* json, const char* key, xfs_soa_vector3* value) {
+    if (key != NULL) {
+        json = cJSON_GetObjectItem(json, key);
+        if (json == NULL || !cJSON_IsObject(json)) {
+            return;
+        }
+    }
+
+    xfs_json_get_float4(json, "x", &value->x.x);
+    xfs_json_get_float4(json, "y", &value->y.x);
+    xfs_json_get_float4(json, "z", &value->z.x);
+}
+
+xfs_object* xfs_object_from_json(const cJSON* json, const xfs* xfs) {
+    if (cJSON_IsNull(json) || !cJSON_IsObject(json)) {
+        return NULL;
+    }
+
+    const cJSON* id_item = cJSON_GetObjectItem(json, "$id");
+    if (id_item == NULL || !cJSON_IsNumber(id_item)) {
+        return NULL;
+    }
+
+    xfs_def* def = xfs->defs[(int)cJSON_GetNumberValue(id_item)];
+    if (def == NULL) {
+        return NULL;
+    }
+
+    xfs_object* obj = malloc(sizeof(xfs_object));
+    if (obj == NULL) {
+        return NULL;
+    }
+
+    obj->def = def;
+    obj->def_id = (size_t)cJSON_GetNumberValue(id_item);
+
+    obj->fields = calloc(def->prop_count, sizeof(xfs_field));
+
+    for (uint32_t i = 0; i < def->prop_count; i++) {
+        xfs_field* field = &obj->fields[i];
+        const xfs_property_def* prop = &def->props[i];
+
+        field->name = xfs_get_property_name(xfs, prop);
+        field->type = (xfs_type_t)prop->type;
+
+        const cJSON* item = cJSON_GetObjectItem(json, field->name);
+        if (item == NULL) {
+            continue;
+        }
+
+        if (cJSON_IsArray(item)) {
+            field->is_array = true;
+            field->data.array.count = cJSON_GetArraySize(item);
+            field->data.array.entries = calloc(field->data.array.count, sizeof(xfs_data));
+            for (uint32_t j = 0; j < field->data.array.count; j++) {
+                const cJSON* array_item = cJSON_GetArrayItem(item, j);
+                if (array_item == NULL) {
+                    continue;
+                }
+
+                xfs_data* data = &field->data.array.entries[j];
+                if (!xfs_data_from_json(item, field->type, data, xfs)) {
+                    free(obj->fields);
+                    free(obj);
+                    return NULL;
+                }
+            }
+        } else {
+            field->is_array = false;
+            if (!xfs_data_from_json(item, field->type, &field->data, xfs)) {
+                free(obj->fields);
+                free(obj);
+                return NULL;
+            }
+        }
+    }
+
+    return obj;
+}
+
+bool xfs_data_from_json(const cJSON* json, xfs_type_t type, xfs_data* data, const xfs* xfs) {
+    if (cJSON_IsNull(json)) {
+        memset(data, 0, sizeof(xfs_data));
+        return true;
+    }
+
+    cJSON* array[2] = { NULL, NULL };
+
+    switch (type) {
+    case XFS_TYPE_UNDEFINED:
+    case XFS_TYPE_PROPERTY:
+    case XFS_TYPE_EVENT:
+    case XFS_TYPE_GROUP:
+    case XFS_TYPE_PAGE_BEGIN:
+    case XFS_TYPE_PAGE_END:
+    case XFS_TYPE_EVENT32:
+    case XFS_TYPE_ARRAY:
+    case XFS_TYPE_PROPERTYLIST:
+    case XFS_TYPE_GROUP_END:
+    case XFS_TYPE_ENUMLIST:
+    case XFS_TYPE_OSCILLATOR:
+    case XFS_TYPE_VARIABLE:
+    case XFS_TYPE_RECT3D_COLLISION:
+    case XFS_TYPE_EVENT64:
+    case XFS_TYPE_END:
+        return false;
+    case XFS_TYPE_CLASS:
+    case XFS_TYPE_CLASSREF:
+        data->obj = xfs_object_from_json(json, xfs);
+        break;
+    case XFS_TYPE_BOOL:
+        data->value.b = cJSON_IsTrue(json);
+        break;
+    case XFS_TYPE_U8:
+        data->value.u8 = xfs_json_get_t(uint8_t, json, NULL);
+        break;
+    case XFS_TYPE_U16:
+        data->value.u16 = xfs_json_get_t(uint16_t, json, NULL);
+        break;
+    case XFS_TYPE_U32:
+        data->value.u32 = xfs_json_get_t(uint32_t, json, NULL);
+        break;
+    case XFS_TYPE_U64:
+        data->value.u64 = xfs_json_get_t(uint64_t, json, NULL);
+        break;
+    case XFS_TYPE_S8:
+        data->value.s8 = xfs_json_get_t(int8_t, json, NULL);
+        break;
+    case XFS_TYPE_S16:
+        data->value.s16 = xfs_json_get_t(int16_t, json, NULL);
+        break;
+    case XFS_TYPE_S32:
+        data->value.s32 = xfs_json_get_t(int32_t, json, NULL);
+        break;
+    case XFS_TYPE_S64:
+        data->value.s64 = xfs_json_get_t(int64_t, json, NULL);
+        break;
+    case XFS_TYPE_F32:
+        data->value.f32 = xfs_json_get_t(float, json, NULL);
+        break;
+    case XFS_TYPE_F64:
+        data->value.f64 = xfs_json_get_t(double, json, NULL);
+        break;
+    case XFS_TYPE_STRING:
+    case XFS_TYPE_CSTRING:
+        data->str = _strdup(cJSON_GetStringValue(json));
+        break;
+    case XFS_TYPE_COLOR:
+        if (cJSON_IsString(json)) {
+            const char* color_str = cJSON_GetStringValue(json);
+            if (color_str[0] == '#') {
+                data->value.color = strtoul(color_str + 1, NULL, 16);
+            } else {
+                data->value.color = (uint32_t)strtoul(color_str, NULL, 16);
+            }
+        } else {
+            data->value.color = 0;
+        }
+        break;
+    case XFS_TYPE_POINT:
+        data->value.point.x = xfs_json_get_t(int32_t, json, "x");
+        data->value.point.y = xfs_json_get_t(int32_t, json, "y");
+        break;
+    case XFS_TYPE_SIZE:
+        data->value.size.w = xfs_json_get_t(int32_t, json, "w");
+        data->value.size.h = xfs_json_get_t(int32_t, json, "h");
+        break;
+    case XFS_TYPE_RECT:
+        data->value.rect.l = xfs_json_get_t(int32_t, json, "l");
+        data->value.rect.t = xfs_json_get_t(int32_t, json, "t");
+        data->value.rect.r = xfs_json_get_t(int32_t, json, "r");
+        data->value.rect.b = xfs_json_get_t(int32_t, json, "b");
+        break;
+    case XFS_TYPE_MATRIX:
+        xfs_json_get_matrix(json, NULL, &data->value.matrix.m[0][0], 4, 4);
+        break;
+    case XFS_TYPE_VECTOR3:
+        xfs_json_get_float3(json, NULL, &data->value.vector3.x);
+        break;
+    case XFS_TYPE_VECTOR4:
+        xfs_json_get_float4(json, NULL, &data->value.vector4.x);
+        break;
+    case XFS_TYPE_QUATERNION:
+        xfs_json_get_float4(json, NULL, &data->value.quaternion.x);
+        break;
+    case XFS_TYPE_TIME:
+        data->value.time.time = xfs_json_get_t(int64_t, json, NULL);
+        break;
+    case XFS_TYPE_FLOAT2:
+        xfs_json_get_float2(json, NULL, &data->value.float2.x);
+        break;
+    case XFS_TYPE_FLOAT3:
+        xfs_json_get_float3(json, NULL, &data->value.float3.x);
+        break;
+    case XFS_TYPE_FLOAT4:
+        xfs_json_get_float4(json, NULL, &data->value.float4.x);
+        break;
+    case XFS_TYPE_FLOAT3x3:
+        xfs_json_get_matrix(json, NULL, &data->value.float3x3.m[0][0], 3, 3);
+        break;
+    case XFS_TYPE_FLOAT4x3:
+        xfs_json_get_matrix(json, NULL, &data->value.float4x3.m[0][0], 4, 3);
+        break;
+    case XFS_TYPE_FLOAT4x4:
+        xfs_json_get_matrix(json, NULL, &data->value.float4x4.m[0][0], 4, 4);
+        break;
+    case XFS_TYPE_EASECURVE:
+        data->value.easecurve.p1 = xfs_json_get_t(float, json, "p1");
+        data->value.easecurve.p2 = xfs_json_get_t(float, json, "p2");
+        break;
+    case XFS_TYPE_LINE:
+        xfs_json_get_float3(json, "from", &data->value.line.from.x);
+        xfs_json_get_float3(json, "dir", &data->value.line.dir.x);
+        break;
+    case XFS_TYPE_LINESEGMENT:
+        xfs_json_get_float3(json, "p0", &data->value.linesegment.p0.x);
+        xfs_json_get_float3(json, "p1", &data->value.linesegment.p1.x);
+        break;
+    case XFS_TYPE_RAY:
+        xfs_json_get_float3(json, "from", &data->value.ray.from.x);
+        xfs_json_get_float3(json, "dir", &data->value.ray.dir.x);
+        break;
+    case XFS_TYPE_PLANE:
+        xfs_json_get_float3(json, "normal", &data->value.plane.normal.x);
+        data->value.plane.dist = xfs_json_get_t(float, json, "dist");
+        break;
+    case XFS_TYPE_SPHERE:
+        xfs_json_get_float3(json, "center", &data->value.sphere.center.x);
+        data->value.sphere.radius = xfs_json_get_t(float, json, "radius");
+        break;
+    case XFS_TYPE_CAPSULE:
+        xfs_json_get_float3(json, "p0", &data->value.capsule.p0.x);
+        xfs_json_get_float3(json, "p1", &data->value.capsule.p1.x);
+        data->value.capsule.radius = xfs_json_get_t(float, json, "radius");
+        break;
+    case XFS_TYPE_AABB:
+        xfs_json_get_float3(json, "min", &data->value.aabb.min.x);
+        xfs_json_get_float3(json, "max", &data->value.aabb.max.x);
+        break;
+    case XFS_TYPE_OBB:
+        xfs_json_get_matrix(json, "transform", &data->value.obb.transform.m[0][0], 4, 4);
+        xfs_json_get_float3(json, "extent", &data->value.obb.extent.x);
+        break;
+    case XFS_TYPE_CYLINDER:
+        xfs_json_get_float3(json, "p0", &data->value.cylinder.p0.x);
+        xfs_json_get_float3(json, "p1", &data->value.cylinder.p1.x);
+        data->value.cylinder.radius = xfs_json_get_t(float, json, "radius");
+        break;
+    case XFS_TYPE_TRIANGLE:
+        xfs_json_get_float3(json, "p0", &data->value.triangle.p0.x);
+        xfs_json_get_float3(json, "p1", &data->value.triangle.p1.x);
+        xfs_json_get_float3(json, "p2", &data->value.triangle.p2.x);
+        break;
+    case XFS_TYPE_CONE:
+        xfs_json_get_float3(json, "p0", &data->value.cone.p0.x);
+        xfs_json_get_float3(json, "p1", &data->value.cone.p1.x);
+        data->value.cone.r0 = xfs_json_get_t(float, json, "r0");
+        data->value.cone.r1 = xfs_json_get_t(float, json, "r1");
+        break;
+    case XFS_TYPE_TORUS:
+        xfs_json_get_float3(json, "pos", &data->value.torus.pos.x);
+        xfs_json_get_float3(json, "axis", &data->value.torus.axis.x);
+        data->value.torus.r = xfs_json_get_t(float, json, "r");
+        data->value.torus.cr = xfs_json_get_t(float, json, "cr");
+        break;
+    case XFS_TYPE_ELLIPSOID:
+        xfs_json_get_float3(json, "pos", &data->value.ellipsoid.pos.x);
+        xfs_json_get_float3(json, "r", &data->value.ellipsoid.r.x);
+        break;
+    case XFS_TYPE_RANGE:
+        data->value.range.s = xfs_json_get_t(int32_t, json, "s");
+        data->value.range.r = xfs_json_get_t(uint32_t, json, "r");
+        break;
+    case XFS_TYPE_RANGEF:
+        data->value.rangef.s = xfs_json_get_t(float, json, "s");
+        data->value.rangef.r = xfs_json_get_t(float, json, "r");
+        break;
+    case XFS_TYPE_RANGEU16:
+        data->value.rangeu16.s = xfs_json_get_t(uint16_t, json, "s");
+        data->value.rangeu16.r = xfs_json_get_t(uint16_t, json, "r");
+        break;
+    case XFS_TYPE_HERMITECURVE:
+        array[0] = cJSON_GetObjectItem(json, "x");
+        array[1] = cJSON_GetObjectItem(json, "y");
+        if (array[0] == NULL || array[1] == NULL) {
+            return false;
+        }
+
+        if (!cJSON_IsArray(array[0]) || !cJSON_IsArray(array[1])) {
+            return false;
+        }
+
+        for (int i = 0; i < 8; i++) {
+            data->value.hermitecurve.x[i] = xfs_json_get_array_t(float, array[0], i);
+            data->value.hermitecurve.y[i] = xfs_json_get_array_t(float, array[1], i);
+        }
+        break;
+    case XFS_TYPE_FLOAT3x4:
+        xfs_json_get_matrix(json, NULL, &data->value.float3x4.m[0][0], 3, 4);
+        break;
+    case XFS_TYPE_LINESEGMENT4:
+        xfs_json_get_soa_vector3(json, "p0", &data->value.linesegment4.p0_4);
+        xfs_json_get_soa_vector3(json, "p1", &data->value.linesegment4.p1_4);
+        break;
+    case XFS_TYPE_AABB4:
+        xfs_json_get_soa_vector3(json, "min", &data->value.aabb4.min_4);
+        xfs_json_get_soa_vector3(json, "max", &data->value.aabb4.max_4);
+        break;
+    case XFS_TYPE_VECTOR2:
+        xfs_json_get_float2(json, NULL, &data->value.vector2.x);
+        break;
+    case XFS_TYPE_MATRIX33:
+        xfs_json_get_matrix(json, NULL, &data->value.matrix33.m[0][0], 3, 3);
+        break;
+    case XFS_TYPE_RECT3D_XZ:
+        xfs_json_get_float2(json, "lt", &data->value.rect3d_xz.lt.x);
+        xfs_json_get_float2(json, "lb", &data->value.rect3d_xz.lb.x);
+        xfs_json_get_float2(json, "rt", &data->value.rect3d_xz.rt.x);
+        xfs_json_get_float2(json, "rb", &data->value.rect3d_xz.rb.x);
+        break;
+    case XFS_TYPE_RECT3D:
+        xfs_json_get_float3(json, "normal", &data->value.rect3d.normal.x);
+        xfs_json_get_float3(json, "center", &data->value.rect3d.center.x);
+        data->value.rect3d.size_w = xfs_json_get_t(float, json, "size_w");
+        data->value.rect3d.size_h = xfs_json_get_t(float, json, "size_h");
+        break;
+    case XFS_TYPE_PLANE_XZ:
+        data->value.plane_xz.dist = xfs_json_get_t(float, json, "dist");
+        break;
+    case XFS_TYPE_RAY_Y:
+        xfs_json_get_float3(json, "from", &data->value.ray_y.from.x);
+        data->value.ray_y.dir = xfs_json_get_t(float, json, "dir");
+        break;
+    case XFS_TYPE_POINTF:
+        data->value.pointf.x = xfs_json_get_t(float, json, "x");
+        data->value.pointf.y = xfs_json_get_t(float, json, "y");
+        break;
+    case XFS_TYPE_SIZEF:
+        data->value.sizef.w = xfs_json_get_t(float, json, "w");
+        data->value.sizef.h = xfs_json_get_t(float, json, "h");
+        break;
+    case XFS_TYPE_RECTF:
+        data->value.rectf.l = xfs_json_get_t(float, json, "l");
+        data->value.rectf.t = xfs_json_get_t(float, json, "t");
+        data->value.rectf.r = xfs_json_get_t(float, json, "r");
+        data->value.rectf.b = xfs_json_get_t(float, json, "b");
+        break;
+    case XFS_TYPE_CUSTOM:
+        if (cJSON_IsArray(json)) {
+            data->custom.count = cJSON_GetArraySize(json);
+            data->custom.values = (char**)calloc(data->custom.count, sizeof(char*));
+            for (uint8_t i = 0; i < data->custom.count; i++) {
+                const cJSON* item = cJSON_GetArrayItem(json, i);
+                if (item == NULL || !cJSON_IsString(item)) {
+                    return false;
+                }
+
+                data->custom.values[i] = _strdup(cJSON_GetStringValue(item));
+            }
+        } else {
+            return false;
+        }
+        break;
+    }
+
+    return true;
 }

@@ -139,7 +139,7 @@ void xfs_free_data(xfs_type_t type, xfs_data* data) {
     }
 }
 
-const char* xfs_get_property_name(xfs* xfs, const xfs_property_def* prop) {
+const char* xfs_get_property_name(const xfs* xfs, const xfs_property_def* prop) {
     return (const char*)xfs->data + prop->name_offset;
 }
 

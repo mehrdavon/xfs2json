@@ -67,7 +67,52 @@ bool xfs2json(const char* input, const char* output) {
 }
 
 bool json2xfs(const char* input, const char* output) {
-    return false;
+    FILE* file = fopen(input, "r");
+    if (file == NULL) {
+        fprintf(stderr, "Failed to open input file: %s\n", input);
+        return false;
+    }
+
+    fseek(file, 0, SEEK_END);
+    const size_t file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    char* data = (char*)malloc(file_size + 1);
+    if (data == NULL) {
+        fprintf(stderr, "Failed to allocate memory for input file data\n");
+        fclose(file);
+        return false;
+    }
+
+    fread(data, sizeof(char), file_size, file);
+
+    const cJSON* json = cJSON_ParseWithLength(data, file_size);
+    if (json == NULL) {
+        fprintf(stderr, "Failed to parse JSON file: %s\n", input);
+        free(data);
+        fclose(file);
+        return false;
+    }
+
+    xfs* xfs = xfs_from_json(json);
+    if (xfs == NULL) {
+        fprintf(stderr, "Failed to convert JSON to XFS\n");
+        cJSON_Delete(json);
+        free(data);
+        fclose(file);
+        return false;
+    }
+
+    // Save xfs
+    // ...
+
+    xfs_free(xfs);
+    free(xfs);
+    cJSON_Delete(json);
+    free(data);
+    fclose(file);
+
+    return true;
 }
 
 bool convert_files(const char* input, const char* output) {
