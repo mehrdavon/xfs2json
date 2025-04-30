@@ -48,8 +48,9 @@ int args_parse(int argc, char** argv, Args* args) {
         return ARGS_RESULT_EXIT;
     }
 
-    const char* input = NULL;
-    const char* output = NULL;
+    char* input = NULL;
+    char* output = NULL;
+    const char* input_extension = NULL;
 
     struct argparse_option options[] = {
         OPT_HELP(),
@@ -61,7 +62,26 @@ int args_parse(int argc, char** argv, Args* args) {
     argparse_init(&parser, options, s_usages, 0);
     argparse_describe(&parser, s_description, NULL);
 
-    int remaining_args = argparse_parse(&parser, argc, argv);
+    const int remaining_args = argparse_parse(&parser, argc, argv);
+    if (remaining_args == 0) {
+        printf("Error: missing required positional argument 'input'.\n");
+        return ARGS_RESULT_EXIT;
+    }
+
+    input = argv[0]; {
+        if (!util_fs_exists(input)) {
+            printf("Error: %s does not exist!\n", input);
+            return ARGS_RESULT_EXIT;
+        }
+
+        args->input = _strdup(input);
+        args->input_is_dir = util_fs_is_dir(input);
+
+        if (!args->input_is_dir) {
+            input_extension = strrchr(input, '.');
+        }
+    }
+
     if (output != NULL) {
         if (!util_fs_exists(output)) {
             printf("Error: %s does not exist!\n", output);
@@ -70,21 +90,31 @@ int args_parse(int argc, char** argv, Args* args) {
 
         args->output = _strdup(output);
         args->output_is_dir = util_fs_is_dir(output);
-    }
+    } else {
+        if (args->input_is_dir) {
+            printf("Output directory not specified, using input directory.\n");
+            args->output = _strdup(input);
+            args->output_is_dir = true;
+        } else {
+            // Just using .xfs for now because we can't guess the actual extension it should be
+            const char* output_extension = strcmp(input_extension, ".json") == 0 ? ".xfs" : ".json";
+            const int length = sprintf(NULL, "%s.%s", input, output_extension);
+            output = malloc(length + 1);
+            if (output == NULL) {
+                printf("Error: Failed to allocate memory for output path.\n");
+                return ARGS_RESULT_EXIT;
+            }
 
-    if (remaining_args == 0) {
-        printf("Error: missing required positional argument 'input'.\n");
-        return ARGS_RESULT_EXIT;
-    }
-    
-    input = argv[0]; {
-        if (!util_fs_exists(input)) {
-            printf("Error: %s does not exist!\n", input);
-            return ARGS_RESULT_EXIT;
+            if (sprintf(output, "%s.json", input) < 0) {
+                printf("Error: Failed to format output path.\n");
+                free(output);
+                args->output = NULL;
+                return ARGS_RESULT_EXIT;
+            }
+
+            args->output = output;
+            args->output_is_dir = false;
         }
-
-        args->input = strdup(input);
-        args->input_is_dir = util_fs_is_dir(input);
     }
 
     return ARGS_RESULT_OK;
