@@ -1,3 +1,5 @@
+#ifndef ARGS_H
+#define ARGS_H
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -18,3 +20,5 @@ enum {
 int args_parse(int argc, char** argv, Args* args);
 void args_free(Args* args);
 void args_print_help();
+
+#endif // ARGS_H

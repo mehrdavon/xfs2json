@@ -68,7 +68,7 @@ int args_parse(int argc, char** argv, Args* args) {
             return ARGS_RESULT_EXIT;
         }
 
-        args->output = strdup(output);
+        args->output = _strdup(output);
         args->output_is_dir = util_fs_is_dir(output);
     }
 

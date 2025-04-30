@@ -1,4 +1,6 @@
 #include "args.h"
+#include "xfs/xfs.h"
+
 #include <stdio.h>
 
 int main(int argc, char** argv) {

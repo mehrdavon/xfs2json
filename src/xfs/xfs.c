@@ -1,43 +1,474 @@
 #include "xfs.h"
+#include "util/binary_reader.h"
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
-static int xfs_load_class(xfs* xfs, int class_id, size_t offset) {
-    if (xfs == NULL || class_id < 0 || class_id >= xfs->header->class_count) {
-        return XFS_RESULT_ERROR;
-    }
+#define XFS_ERROR(...) \
+    fprintf(stderr, __VA_ARGS__); \
+    xfs_free(xfs); \
+    binary_reader_destroy(reader); \
+    return XFS_RESULT_ERROR
 
-}
+static xfs_object* xfs_load_object(xfs* xfs, binary_reader* r);
+static bool xfs_load_data(xfs* xfs, xfs_type_t type, xfs_data* data, binary_reader* r);
+static void xfs_free_object(xfs_object* obj);
+static void xfs_free_field(xfs_field* field);
+static void xfs_free_data(xfs_type_t type, xfs_data* data);
 
 int xfs_load(const char* path, xfs* xfs) {
     if (path == NULL || xfs == NULL) {
         return XFS_RESULT_ERROR;
     }
 
-    FILE* file = fopen(path, "rb");
-    if (file == NULL) {
-        return XFS_RESULT_ERROR;
+    binary_reader* reader = binary_reader_create(path);
+
+    binary_reader_read(reader, &xfs->header, sizeof(xfs_header));
+    if (xfs->header.magic != XFS_MAGIC) {
+        fprintf(stderr, "Invalid XFS file: %s\n", path);
+        binary_reader_destroy(reader);
+        return XFS_RESULT_INVALID;
     }
 
-    fseek(file, 0, SEEK_END);
-    xfs->size = ftell(file);
-    fseek(file, 0, SEEK_SET);
+    if (xfs->header.major_version != XFS_MAJOR_VERSION || xfs->header.minor_version != XFS_MINOR_VERSION) {
+        fprintf(stderr, "Unsupported XFS version: %04X-%04X\n", xfs->header.major_version, xfs->header.minor_version);
+        binary_reader_destroy(reader);
+        return XFS_RESULT_INVALID;
+    }
 
-    xfs->data = malloc(xfs->size);
+    xfs->data = malloc(xfs->header.def_size);
     if (xfs->data == NULL) {
-        fclose(file);
+        fprintf(stderr, "Failed to allocate memory for XFS data\n");
+        binary_reader_destroy(reader);
         return XFS_RESULT_ERROR;
     }
+    
+    xfs->defs = (xfs_def*)xfs->data;
 
-    fread(xfs->data, 1, xfs->size, file);
-    fclose(file);
+    uint32_t* def_offsets = malloc(xfs->header.def_count * sizeof(uint32_t));
+    if (def_offsets == NULL) {
+        XFS_ERROR("Failed to allocate memory for XFS definition offsets\n");
+    }
 
-    xfs->header = (xfs_header*)xfs->data;
-    xfs->defs = (xfs_def*)((char*)xfs->data + xfs->header->def_offset);
-    xfs->root = (xfs_class_ref*)((char*)xfs->data + sizeof(xfs_header) + xfs->header->def_size);
+    if (binary_reader_read(reader, def_offsets, xfs->header.def_count * sizeof(uint32_t)) != BINARY_READER_OK) {
+        XFS_ERROR("Failed to read XFS definition offsets\n");
+    }
+
+    if (binary_reader_read(reader, xfs->defs, xfs->header.def_size) != BINARY_READER_OK) {
+        XFS_ERROR("Failed to read XFS definitions\n");
+    }
+
+    free(def_offsets);
+    xfs->defs = (xfs_def*)xfs->data;
+    xfs->size = xfs->header.def_size;
+
+    xfs->root = xfs_load_object(xfs, reader);
+    if (xfs->root == NULL) {
+        XFS_ERROR("Failed to load root object\n");
+    }
+
+    return XFS_RESULT_OK;
 }
 
 void xfs_free(xfs* xfs) {
+    xfs_free_object(xfs->root);
     free(xfs->data);
+
+    xfs->data = NULL;
+    xfs->defs = NULL;
+    xfs->size = 0;
+
+    free(xfs);
+}
+
+static void xfs_free_object(xfs_object* obj) {
+    if (obj == NULL) {
+        return;
+    }
+
+    for (uint32_t i = 0; i < obj->def->prop_count; i++) {
+        xfs_free_field(&obj->fields[i]);
+    }
+
+    free(obj->fields);
+    free(obj);
+}
+
+void xfs_free_field(xfs_field* field) {
+    if (field == NULL) {
+        return;
+    }
+
+    if (field->is_array) {
+        for (uint32_t j = 0; j < field->data.array.count; j++) {
+            xfs_free_data(field->type, &field->data.array.entries[j]);
+        }
+
+        free(field->data.array.entries);
+    } else {
+        xfs_free_data(field->type, &field->data);
+    }
+}
+
+void xfs_free_data(xfs_type_t type, xfs_data* data) {
+    if (data == NULL) {
+        return;
+    }
+
+    if (type == XFS_TYPE_CLASS || type == XFS_TYPE_CLASSREF) {
+        xfs_free_object(data->obj);
+    } else if (type == XFS_TYPE_STRING || type == XFS_TYPE_CSTRING) {
+        free(data->str);
+    } else if (type == XFS_TYPE_CUSTOM) {
+        for (uint8_t j = 0; j < data->custom.count; j++) {
+            free(data->custom.values[j]);
+        }
+
+        free((void*)data->custom.values);
+    }
+}
+
+const char* xfs_get_property_name(xfs* xfs, const xfs_property_def* prop) {
+    return (const char*)xfs->data + prop->name_offset;
+}
+
+static xfs_object* xfs_load_object(xfs* xfs, binary_reader* r) {
+    xfs_class_ref ref;
+    if (binary_reader_read(r, &ref, sizeof(xfs_class_ref)) != BINARY_READER_OK) {
+        fprintf(stderr, "Failed to read XFS class reference\n");
+        return NULL;
+    }
+
+    if ((ref.class_id >> 1 & 0x7FFF) == 0x7FFF || (ref.class_id & 1) == 0) {
+        return NULL; // Skip invalid class ID
+    }
+
+    xfs_object* obj = calloc(1, sizeof(xfs_object));
+    if (obj == NULL) {
+        fprintf(stderr, "Failed to allocate memory for XFS object\n");
+        return NULL;
+    }
+
+    obj->def = &xfs->defs[ref.class_id >> 1];
+    obj->fields = calloc(obj->def->prop_count, sizeof(xfs_field));
+
+    if (obj->fields == NULL) {
+        fprintf(stderr, "Failed to allocate memory for XFS object fields\n");
+        free(obj);
+        return NULL;
+    }
+
+    const uint32_t size = binary_reader_read_u32(r); // Skip the size field
+    const size_t start_pos = binary_reader_tell(r);
+
+    for (uint32_t i = 0; i < obj->def->prop_count; i++) {
+        const xfs_property_def* prop = &obj->def->props[i];
+        xfs_field* field = &obj->fields[i];
+
+        field->name = xfs_get_property_name(xfs, prop);
+        field->type = (xfs_type_t)prop->type;
+        field->is_array = false;
+
+        const uint32_t count = binary_reader_read_u32(r);
+        if (count == 0) {
+            field->data.obj = NULL;
+        } else if (count > 1) {
+            field->is_array = true;
+            field->data.array.count = count;
+            field->data.array.entries = calloc(count, sizeof(xfs_data));
+            if (field->data.array.entries == NULL) {
+                fprintf(stderr, "Failed to allocate memory for XFS array entries\n");
+                free(obj->fields);
+                free(obj);
+                binary_reader_seek(r, (int)(start_pos + size), SEEK_SET);
+                return NULL;
+            }
+
+            for (uint32_t j = 0; j < count; j++) {
+                if (!xfs_load_data(xfs, field->type, &field->data.array.entries[j], r)) {
+                    fprintf(stderr, "Failed to load array entry\n");
+                    free(obj->fields);
+                    free(obj);
+                    binary_reader_seek(r, (int)(start_pos + size), SEEK_SET);
+                    return NULL;
+                }
+            }
+        } else {
+            if (!xfs_load_data(xfs, field->type, &field->data, r)) {
+                fprintf(stderr, "Failed to load field value\n");
+                free(obj->fields);
+                free(obj);
+                binary_reader_seek(r, (int)(start_pos + size), SEEK_SET);
+                return NULL;
+            }
+        }
+    }
+
+    return obj;
+}
+
+bool xfs_load_data(xfs* xfs, xfs_type_t type, xfs_data* data, binary_reader* r) {
+    char string_buffer_1[512];
+    char string_buffer_2[128];
+
+    switch (type) {
+    case XFS_TYPE_UNDEFINED: break;
+    case XFS_TYPE_CLASS:
+    case XFS_TYPE_CLASSREF:
+        data->obj = xfs_load_object(xfs, r);
+        break;
+    case XFS_TYPE_BOOL:
+        data->value.b = binary_reader_read_bool(r);
+        break;
+    case XFS_TYPE_U8:
+        data->value.u8 = binary_reader_read_u8(r);
+        break;
+    case XFS_TYPE_U16:
+        data->value.u16 = binary_reader_read_u16(r);
+        break;
+    case XFS_TYPE_U32:
+        data->value.u32 = binary_reader_read_u32(r);
+        break;
+    case XFS_TYPE_U64:
+        data->value.u64 = binary_reader_read_u64(r);
+        break;
+    case XFS_TYPE_S8:
+        data->value.s8 = binary_reader_read_s8(r);
+        break;
+    case XFS_TYPE_S16:
+        data->value.s16 = binary_reader_read_s16(r);
+        break;
+    case XFS_TYPE_S32:
+        data->value.s32 = binary_reader_read_s32(r);
+        break;
+    case XFS_TYPE_S64:
+        data->value.s64 = binary_reader_read_s64(r);
+        break;
+    case XFS_TYPE_F32:
+        data->value.f32 = binary_reader_read_f32(r);
+        break;
+    case XFS_TYPE_F64:
+        data->value.f64 = binary_reader_read_f64(r);
+        break;
+    case XFS_TYPE_STRING:
+        if (binary_reader_read_str(r, string_buffer_1, sizeof(string_buffer_1)) != BINARY_READER_OK) {
+            fprintf(stderr, "Failed to read XFS string\n");
+            return false;
+        }
+
+        data->str = _strdup(string_buffer_1);
+        if (data->str == NULL) {
+            fprintf(stderr, "Failed to allocate memory for XFS string\n");
+            return false;
+        }
+        break;
+    case XFS_TYPE_COLOR:
+        data->value.color = binary_reader_read_u32(r);
+        break;
+    case XFS_TYPE_POINT:
+        data->value.point.x = binary_reader_read_s32(r);
+        data->value.point.y = binary_reader_read_s32(r);
+        break;
+    case XFS_TYPE_SIZE:
+        data->value.size.w = binary_reader_read_s32(r);
+        data->value.size.h = binary_reader_read_s32(r);
+        break;
+    case XFS_TYPE_RECT:
+        data->value.rect.t = binary_reader_read_s32(r);
+        data->value.rect.l = binary_reader_read_s32(r);
+        data->value.rect.b = binary_reader_read_s32(r);
+        data->value.rect.r = binary_reader_read_s32(r);
+        break;
+    case XFS_TYPE_MATRIX:
+        binary_reader_read(r, &data->value.matrix, sizeof(xfs_matrix));
+        break;
+    case XFS_TYPE_VECTOR3:
+        binary_reader_read(r, &data->value.vector3, sizeof(xfs_vector3));
+        break;
+    case XFS_TYPE_VECTOR4:
+        binary_reader_read(r, &data->value.vector4, sizeof(xfs_vector4));
+        break;
+    case XFS_TYPE_QUATERNION:
+        binary_reader_read(r, &data->value.quaternion, sizeof(xfs_quaternion));
+        break;
+    case XFS_TYPE_PROPERTY:
+    case XFS_TYPE_EVENT:
+    case XFS_TYPE_GROUP:
+    case XFS_TYPE_PAGE_BEGIN:
+    case XFS_TYPE_PAGE_END:
+    case XFS_TYPE_EVENT32:
+    case XFS_TYPE_ARRAY:
+    case XFS_TYPE_PROPERTYLIST:
+    case XFS_TYPE_GROUP_END:
+    case XFS_TYPE_ENUMLIST:
+    case XFS_TYPE_OSCILLATOR:
+    case XFS_TYPE_VARIABLE:
+    case XFS_TYPE_RECT3D_COLLISION:
+    case XFS_TYPE_EVENT64:
+    case XFS_TYPE_END:
+        fprintf(stderr, "Unsupported type: %d\n", type);
+        break;
+    case XFS_TYPE_CSTRING:
+        if (binary_reader_read_str(r, string_buffer_1, sizeof(string_buffer_1)) != BINARY_READER_OK) {
+            fprintf(stderr, "Failed to read XFS C-string\n");
+            return false;
+        }
+
+        data->str = _strdup(string_buffer_1);
+        if (data->str == NULL) {
+            fprintf(stderr, "Failed to allocate memory for XFS C-string\n");
+            return false;
+        }
+        break;
+    case XFS_TYPE_TIME:
+        data->value.time.time = binary_reader_read_s64(r);
+        break;
+    case XFS_TYPE_FLOAT2:
+        data->value.float2.x = binary_reader_read_f32(r);
+        data->value.float2.y = binary_reader_read_f32(r);
+        break;
+    case XFS_TYPE_FLOAT3:
+        data->value.float3.x = binary_reader_read_f32(r);
+        data->value.float3.y = binary_reader_read_f32(r);
+        data->value.float3.z = binary_reader_read_f32(r);
+        break;
+    case XFS_TYPE_FLOAT4:
+        data->value.float4.x = binary_reader_read_f32(r);
+        data->value.float4.y = binary_reader_read_f32(r);
+        data->value.float4.z = binary_reader_read_f32(r);
+        data->value.float4.w = binary_reader_read_f32(r);
+        break;
+    case XFS_TYPE_FLOAT3x3:
+        binary_reader_read(r, &data->value.float3x3, sizeof(xfs_float3x3));
+        break;
+    case XFS_TYPE_FLOAT4x3:
+        binary_reader_read(r, &data->value.float4x3, sizeof(xfs_float4x3));
+        break;
+    case XFS_TYPE_FLOAT4x4:
+        binary_reader_read(r, &data->value.float4x4, sizeof(xfs_float4x4));
+        break;
+    case XFS_TYPE_EASECURVE:
+        data->value.easecurve.p1 = binary_reader_read_f32(r);
+        data->value.easecurve.p2 = binary_reader_read_f32(r);
+        break;
+    case XFS_TYPE_LINE:
+        binary_reader_read(r, &data->value.line, sizeof(xfs_line));
+        break;
+    case XFS_TYPE_LINESEGMENT:
+        binary_reader_read(r, &data->value.linesegment, sizeof(xfs_linesegment));
+        break;
+    case XFS_TYPE_RAY:
+        binary_reader_read(r, &data->value.ray, sizeof(xfs_ray));
+        break;
+    case XFS_TYPE_PLANE:
+        binary_reader_read(r, &data->value.plane, sizeof(xfs_plane));
+        break;
+    case XFS_TYPE_SPHERE:
+        binary_reader_read(r, &data->value.sphere, sizeof(xfs_sphere));
+        break;
+    case XFS_TYPE_CAPSULE:
+        binary_reader_read(r, &data->value.capsule, sizeof(xfs_capsule));
+        break;
+    case XFS_TYPE_AABB:
+        binary_reader_read(r, &data->value.aabb, sizeof(xfs_aabb));
+        break;
+    case XFS_TYPE_OBB:
+        binary_reader_read(r, &data->value.obb, sizeof(xfs_obb));
+        break;
+    case XFS_TYPE_CYLINDER:
+        binary_reader_read(r, &data->value.cylinder, sizeof(xfs_cylinder));
+        break;
+    case XFS_TYPE_TRIANGLE:
+        binary_reader_read(r, &data->value.triangle, sizeof(xfs_triangle));
+        break;
+    case XFS_TYPE_CONE:
+        binary_reader_read(r, &data->value.cone, sizeof(xfs_cone));
+        break;
+    case XFS_TYPE_TORUS:
+        binary_reader_read(r, &data->value.torus, sizeof(xfs_torus));
+        break;
+    case XFS_TYPE_ELLIPSOID:
+        binary_reader_read(r, &data->value.ellipsoid, sizeof(xfs_ellipsoid));
+        break;
+    case XFS_TYPE_RANGE:
+        data->value.range.s = binary_reader_read_s32(r);
+        data->value.range.r = binary_reader_read_u32(r);
+        break;
+    case XFS_TYPE_RANGEF:
+        data->value.rangef.s = binary_reader_read_f32(r);
+        data->value.rangef.r = binary_reader_read_f32(r);
+        break;
+    case XFS_TYPE_RANGEU16:
+        data->value.rangeu16.s = binary_reader_read_u16(r);
+        data->value.rangeu16.r = binary_reader_read_u16(r);
+        break;
+    case XFS_TYPE_HERMITECURVE:
+        binary_reader_read(r, &data->value.hermitecurve, sizeof(xfs_hermitecurve));
+        break;
+    case XFS_TYPE_FLOAT3x4:
+        binary_reader_read(r, &data->value.float3x4, sizeof(xfs_float3x4));
+        break;
+    case XFS_TYPE_LINESEGMENT4:
+        binary_reader_read(r, &data->value.linesegment4, sizeof(xfs_linesegment4));
+        break;
+    case XFS_TYPE_AABB4:
+        binary_reader_read(r, &data->value.aabb4, sizeof(xfs_aabb4));
+        break;
+    case XFS_TYPE_VECTOR2:
+        data->value.vector2.x = binary_reader_read_f32(r);
+        data->value.vector2.y = binary_reader_read_f32(r);
+        break;
+    case XFS_TYPE_MATRIX33:
+        binary_reader_read(r, &data->value.matrix33, sizeof(xfs_matrix33));
+        break;
+    case XFS_TYPE_RECT3D_XZ:
+        binary_reader_read(r, &data->value.rect3d_xz, sizeof(xfs_rect3d_xz));
+        break;
+    case XFS_TYPE_RECT3D:
+        binary_reader_read(r, &data->value.rect3d, sizeof(xfs_rect3d));
+        break;
+    case XFS_TYPE_PLANE_XZ:
+        binary_reader_read(r, &data->value.plane_xz, sizeof(xfs_plane_xz));
+        break;
+    case XFS_TYPE_RAY_Y:
+        binary_reader_read(r, &data->value.ray_y, sizeof(xfs_ray_y));
+        break;
+    case XFS_TYPE_POINTF:
+        data->value.pointf.x = binary_reader_read_f32(r);
+        data->value.pointf.y = binary_reader_read_f32(r);
+        break;
+    case XFS_TYPE_SIZEF:
+        data->value.sizef.w = binary_reader_read_f32(r);
+        data->value.sizef.h = binary_reader_read_f32(r);
+        break;
+    case XFS_TYPE_RECTF:
+        data->value.rectf.t = binary_reader_read_f32(r);
+        data->value.rectf.l = binary_reader_read_f32(r);
+        data->value.rectf.b = binary_reader_read_f32(r);
+        data->value.rectf.r = binary_reader_read_f32(r);
+        break;
+    case XFS_TYPE_CUSTOM:
+        data->custom.count = binary_reader_read_u8(r);
+        data->custom.values = (const char**)malloc(data->custom.count * sizeof(const char*));
+        if (data->custom.values == NULL) {
+            fprintf(stderr, "Failed to allocate memory for XFS custom values\n");
+            return false;
+        }
+
+        for (uint8_t i = 0; i < data->custom.count; i++) {
+            if (binary_reader_read_str(r, string_buffer_2, sizeof(string_buffer_2)) != BINARY_READER_OK) {
+                fprintf(stderr, "Failed to read XFS custom value\n");
+                return false;
+            }
+            data->custom.values[i] = _strdup(string_buffer_2);
+            if (data->custom.values[i] == NULL) {
+                fprintf(stderr, "Failed to allocate memory for XFS custom value\n");
+                return false;
+            }
+        }
+        break;
+    }
+
+    return true;
 }

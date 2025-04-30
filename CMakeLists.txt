@@ -8,6 +8,7 @@ set(SOURCES
     src/main.c
     src/args.c
     src/util/binary_reader.c
+    src/xfs/xfs.c
 )
 
 set(ARGPARSE_STATIC ON)
@@ -23,3 +24,9 @@ target_include_directories(xfs2json PRIVATE
 target_link_libraries(xfs2json PRIVATE
     argparse_static
 )
+
+if (WIN32)
+    target_compile_definitions(xfs2json PRIVATE
+        _CRT_SECURE_NO_WARNINGS
+    )
+endif()
