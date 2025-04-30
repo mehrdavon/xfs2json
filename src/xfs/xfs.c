@@ -303,7 +303,7 @@ bool xfs_load_data(xfs* xfs, xfs_type_t type, xfs_data* data, binary_reader* r) 
             return false;
         }
 
-        data->str = _strdup(string_buffer_1);
+        data->str = strdup(string_buffer_1);
         if (data->str == NULL) {
             fprintf(stderr, "Failed to allocate memory for XFS string\n");
             return false;
@@ -495,7 +495,7 @@ bool xfs_load_data(xfs* xfs, xfs_type_t type, xfs_data* data, binary_reader* r) 
                 fprintf(stderr, "Failed to read XFS custom value\n");
                 return false;
             }
-            data->custom.values[i] = _strdup(string_buffer_2);
+            data->custom.values[i] = strdup(string_buffer_2);
             if (data->custom.values[i] == NULL) {
                 fprintf(stderr, "Failed to allocate memory for XFS custom value\n");
                 return false;

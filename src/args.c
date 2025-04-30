@@ -61,7 +61,7 @@ int args_parse(int argc, char** argv, Args* args) {
     argparse_init(&parser, options, s_usages, 0);
     argparse_describe(&parser, s_description, NULL);
 
-    const int remaining_args = argparse_parse(&parser, argc, argv);
+    const int remaining_args = argparse_parse(&parser, argc, (const char**)argv);
     if (remaining_args == 0) {
         printf("Error: missing required positional argument 'input'.\n");
         return ARGS_RESULT_EXIT;
@@ -73,7 +73,7 @@ int args_parse(int argc, char** argv, Args* args) {
             return ARGS_RESULT_EXIT;
         }
 
-        args->input = _strdup(input);
+        args->input = strdup(input);
         args->input_is_dir = util_fs_is_dir(input);
 
         if (!args->input_is_dir) {
@@ -87,12 +87,12 @@ int args_parse(int argc, char** argv, Args* args) {
             return ARGS_RESULT_EXIT;
         }
 
-        args->output = _strdup(output);
+        args->output = strdup(output);
         args->output_is_dir = util_fs_is_dir(output);
     } else {
         if (args->input_is_dir) {
             printf("Output directory not specified, using input directory.\n");
-            args->output = _strdup(input);
+            args->output = strdup(input);
             args->output_is_dir = true;
         } else {
             // Just using .xfs for now because we can't guess the actual extension it should be

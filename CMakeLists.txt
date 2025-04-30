@@ -37,5 +37,6 @@ target_link_libraries(xfs2json PRIVATE
 if (WIN32)
     target_compile_definitions(xfs2json PRIVATE
         _CRT_SECURE_NO_WARNINGS
+        strdup=_strdup
     )
 endif()

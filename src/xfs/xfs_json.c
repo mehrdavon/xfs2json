@@ -788,7 +788,7 @@ bool xfs_data_from_json(const cJSON* json, xfs_type_t type, xfs_data* data, xfs*
         break;
     case XFS_TYPE_STRING:
     case XFS_TYPE_CSTRING:
-        data->str = _strdup(cJSON_GetStringValue(json));
+        data->str = strdup(cJSON_GetStringValue(json));
         break;
     case XFS_TYPE_COLOR:
         if (cJSON_IsString(json)) {
@@ -1001,7 +1001,7 @@ bool xfs_data_from_json(const cJSON* json, xfs_type_t type, xfs_data* data, xfs*
                     return false;
                 }
 
-                data->custom.values[i] = _strdup(cJSON_GetStringValue(item));
+                data->custom.values[i] = strdup(cJSON_GetStringValue(item));
             }
         } else {
             return false;
