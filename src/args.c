@@ -96,20 +96,15 @@ int args_parse(int argc, char** argv, Args* args) {
             args->output_is_dir = true;
         } else {
             // Just using .xfs for now because we can't guess the actual extension it should be
-            const char* output_extension = strcmp(input_extension, ".json") == 0 ? ".xfs" : ".json";
-            const int length = sprintf(NULL, "%s.%s", input, output_extension);
+            const char* output_extension = strcmp(input_extension, ".json") == 0 ? "xfs" : "json";
+            const int length = snprintf(NULL, 0, "%s.%s", input, output_extension);
             output = malloc(length + 1);
             if (output == NULL) {
                 printf("Error: Failed to allocate memory for output path.\n");
                 return ARGS_RESULT_EXIT;
             }
 
-            if (sprintf(output, "%s.json", input) < 0) {
-                printf("Error: Failed to format output path.\n");
-                free(output);
-                args->output = NULL;
-                return ARGS_RESULT_EXIT;
-            }
+            snprintf(output, length + 1, "%s.%s", input, output_extension);
 
             args->output = output;
             args->output_is_dir = false;

@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     }
 
     for (int i = 0; i < xfs.header.def_count; i++) {
-        const xfs_def* def = &xfs.defs[i];
+        const xfs_def* def = xfs.defs[i];
         printf("Class ID: %u\n", def->dti_hash);
         for (int j = 0; j < def->prop_count; j++) {
             const xfs_property_def* prop = &def->props[j];

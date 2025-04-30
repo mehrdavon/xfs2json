@@ -41,6 +41,8 @@ binary_reader* binary_reader_create(const char* path) {
     fseek(file, 0, SEEK_SET);
 
     reader->buffer_size = BINARY_READER_BUFFER_SIZE;
+    reader->buffer = reader->local_buffer;
+    reader->buffer_pos = reader->buffer_size; // Force a refill on the first read
 
     return reader;
 }

@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define XFS_MAGIC 0x58565300 // "XFS\0"
+#define XFS_MAGIC 0x534658 // "XFS\0"
 #define XFS_MAJOR_VERSION 0x10
 #define XFS_MINOR_VERSION 0x1FD
 
@@ -213,7 +213,7 @@ typedef struct xfs {
     size_t size;
 
     xfs_header header;
-    xfs_def* defs;
+    xfs_def** defs;
 
     xfs_object* root; //< Free this
 } xfs;

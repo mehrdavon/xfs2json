@@ -43,24 +43,17 @@ int xfs_load(const char* path, xfs* xfs) {
         binary_reader_destroy(reader);
         return XFS_RESULT_ERROR;
     }
-    
-    xfs->defs = (xfs_def*)xfs->data;
 
-    uint32_t* def_offsets = malloc(xfs->header.def_count * sizeof(uint32_t));
-    if (def_offsets == NULL) {
-        XFS_ERROR("Failed to allocate memory for XFS definition offsets\n");
-    }
-
-    if (binary_reader_read(reader, def_offsets, xfs->header.def_count * sizeof(uint32_t)) != BINARY_READER_OK) {
-        XFS_ERROR("Failed to read XFS definition offsets\n");
-    }
-
-    if (binary_reader_read(reader, xfs->defs, xfs->header.def_size) != BINARY_READER_OK) {
+    if (binary_reader_read(reader, xfs->data, xfs->header.def_size) != BINARY_READER_OK) {
         XFS_ERROR("Failed to read XFS definitions\n");
     }
 
-    free(def_offsets);
-    xfs->defs = (xfs_def*)xfs->data;
+    xfs->defs = (xfs_def**)calloc(xfs->header.def_count, sizeof(xfs_def*));
+    const uint32_t* def_offsets = xfs->data;
+    for (int i = 0; i < xfs->header.def_count; i++) {
+        xfs->defs[i] = (xfs_def*)((uint8_t*)xfs->data + def_offsets[i]);
+    }
+
     xfs->size = xfs->header.def_size;
 
     xfs->root = xfs_load_object(xfs, reader);
@@ -74,6 +67,7 @@ int xfs_load(const char* path, xfs* xfs) {
 void xfs_free(xfs* xfs) {
     xfs_free_object(xfs->root);
     free(xfs->data);
+    free((void*)xfs->defs);
 
     xfs->data = NULL;
     xfs->defs = NULL;
@@ -148,7 +142,7 @@ static xfs_object* xfs_load_object(xfs* xfs, binary_reader* r) {
         return NULL;
     }
 
-    obj->def = &xfs->defs[ref.class_id >> 1];
+    obj->def = xfs->defs[ref.class_id >> 1];
     obj->fields = calloc(obj->def->prop_count, sizeof(xfs_field));
 
     if (obj->fields == NULL) {
