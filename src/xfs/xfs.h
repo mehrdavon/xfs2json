@@ -130,6 +130,7 @@ struct xfs_field;
 typedef struct xfs_object {
     xfs_def* def;
     size_t def_id;
+    int16_t id;
     struct xfs_field* fields; //< Free this
 } xfs_object;
 
@@ -230,6 +231,7 @@ enum {
 };
 
 int xfs_load(const char* path, xfs* xfs);
+int xfs_save(const char* path, const xfs* xfs);
 void xfs_free(xfs* xfs);
 
 cJSON* xfs_to_json(const xfs* xfs);

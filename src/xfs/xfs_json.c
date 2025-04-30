@@ -25,8 +25,8 @@ static void xfs_json_get_soa_vector3(const cJSON* json, const char* key, xfs_soa
 #define xfs_json_get_t(type, json, key) (type)xfs_json_get_number(json, key)
 #define xfs_json_get_array_t(type, json, index) (type)xfs_json_get_array_number(json, index)
 
-static xfs_object* xfs_object_from_json(const cJSON* json, const xfs* xfs);
-static bool xfs_data_from_json(const cJSON* json, xfs_type_t type, xfs_data* data, const xfs* xfs);
+static xfs_object* xfs_object_from_json(const cJSON* json, xfs* xfs);
+static bool xfs_data_from_json(const cJSON* json, xfs_type_t type, xfs_data* data, xfs* xfs);
 
 cJSON* xfs_to_json(const xfs* xfs) {
     cJSON* json = cJSON_CreateObject();
@@ -85,6 +85,7 @@ xfs* xfs_from_json(const cJSON* json) {
     xfs->header.magic = XFS_MAGIC;
     xfs->header.major_version = XFS_MAJOR_VERSION;
     xfs->header.minor_version = (uint16_t)cJSON_GetNumberValue(cJSON_GetObjectItem(json, "$version"));
+    xfs->header.class_count = 0; // Will be filled later
     xfs->header.def_count = cJSON_GetArraySize(defs);
 
     // Compute the size of the 'defs' buffer
@@ -124,9 +125,8 @@ xfs* xfs_from_json(const cJSON* json) {
         }
     }
 
-    // Align the size to 16 bytes
     size_t data_size = def_size + string_buffer_size;
-    data_size = (data_size + 15) & ~0x0F;
+    data_size = (data_size + 3) & ~3; // Align to 4 bytes
     xfs->header.def_size = (int32_t)data_size;
 
     xfs->data = malloc(data_size);
@@ -183,7 +183,7 @@ xfs* xfs_from_json(const cJSON* json) {
             const char* name = cJSON_GetStringValue(cJSON_GetObjectItem(prop_json, "name"));
             const size_t length = strlen(name) + 1; // +1 for null terminator
             binary_writer_write_u32(writer, (uint32_t)string_offset); // Name offset
-            binary_writer_write_at(writer, string_offset, name, length + 1);
+            binary_writer_write_at(writer, string_offset, name, length);
             string_offset += length;
 
             binary_writer_write_u8(writer, (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(prop_json, "type")));
@@ -192,6 +192,11 @@ xfs* xfs_from_json(const cJSON* json) {
             uint16_t bytes = (uint16_t)cJSON_GetNumberValue(cJSON_GetObjectItem(prop_json, "bytes"));
             bytes |= (uint16_t)cJSON_IsTrue(cJSON_GetObjectItem(prop_json, "disable")) << 15;
             binary_writer_write_u16(writer, bytes);
+
+            binary_writer_write_u64(writer, 0); // Padding
+            binary_writer_write_u64(writer, 0); // Padding
+            binary_writer_write_u64(writer, 0); // Padding
+            binary_writer_write_u64(writer, 0); // Padding
         }
     }
 
@@ -648,7 +653,7 @@ void xfs_json_get_soa_vector3(const cJSON* json, const char* key, xfs_soa_vector
     xfs_json_get_float4(json, "z", &value->z.x);
 }
 
-xfs_object* xfs_object_from_json(const cJSON* json, const xfs* xfs) {
+xfs_object* xfs_object_from_json(const cJSON* json, xfs* xfs) {
     if (cJSON_IsNull(json) || !cJSON_IsObject(json)) {
         return NULL;
     }
@@ -696,7 +701,7 @@ xfs_object* xfs_object_from_json(const cJSON* json, const xfs* xfs) {
                 }
 
                 xfs_data* data = &field->data.array.entries[j];
-                if (!xfs_data_from_json(item, field->type, data, xfs)) {
+                if (!xfs_data_from_json(array_item, field->type, data, xfs)) {
                     free(obj->fields);
                     free(obj);
                     return NULL;
@@ -712,16 +717,19 @@ xfs_object* xfs_object_from_json(const cJSON* json, const xfs* xfs) {
         }
     }
 
+    obj->id = (int16_t)xfs->header.class_count;
+    xfs->header.class_count++;
+
     return obj;
 }
 
-bool xfs_data_from_json(const cJSON* json, xfs_type_t type, xfs_data* data, const xfs* xfs) {
+bool xfs_data_from_json(const cJSON* json, xfs_type_t type, xfs_data* data, xfs* xfs) {
     if (cJSON_IsNull(json)) {
         memset(data, 0, sizeof(xfs_data));
         return true;
     }
 
-    cJSON* array[2] = { NULL, NULL };
+    cJSON* temp[2] = { NULL, NULL };
 
     switch (type) {
     case XFS_TYPE_UNDEFINED:
@@ -917,19 +925,19 @@ bool xfs_data_from_json(const cJSON* json, xfs_type_t type, xfs_data* data, cons
         data->value.rangeu16.r = xfs_json_get_t(uint16_t, json, "r");
         break;
     case XFS_TYPE_HERMITECURVE:
-        array[0] = cJSON_GetObjectItem(json, "x");
-        array[1] = cJSON_GetObjectItem(json, "y");
-        if (array[0] == NULL || array[1] == NULL) {
+        temp[0] = cJSON_GetObjectItem(json, "x");
+        temp[1] = cJSON_GetObjectItem(json, "y");
+        if (temp[0] == NULL || temp[1] == NULL) {
             return false;
         }
 
-        if (!cJSON_IsArray(array[0]) || !cJSON_IsArray(array[1])) {
+        if (!cJSON_IsArray(temp[0]) || !cJSON_IsArray(temp[1])) {
             return false;
         }
 
         for (int i = 0; i < 8; i++) {
-            data->value.hermitecurve.x[i] = xfs_json_get_array_t(float, array[0], i);
-            data->value.hermitecurve.y[i] = xfs_json_get_array_t(float, array[1], i);
+            data->value.hermitecurve.x[i] = xfs_json_get_array_t(float, temp[0], i);
+            data->value.hermitecurve.y[i] = xfs_json_get_array_t(float, temp[1], i);
         }
         break;
     case XFS_TYPE_FLOAT3x4:
@@ -983,11 +991,12 @@ bool xfs_data_from_json(const cJSON* json, xfs_type_t type, xfs_data* data, cons
         data->value.rectf.b = xfs_json_get_t(float, json, "b");
         break;
     case XFS_TYPE_CUSTOM:
-        if (cJSON_IsArray(json)) {
-            data->custom.count = cJSON_GetArraySize(json);
+        temp[0] = cJSON_GetObjectItem(json, "values");
+        if (cJSON_IsArray(temp[0])) {
+            data->custom.count = cJSON_GetArraySize(temp[0]);
             data->custom.values = (char**)calloc(data->custom.count, sizeof(char*));
             for (uint8_t i = 0; i < data->custom.count; i++) {
-                const cJSON* item = cJSON_GetArrayItem(json, i);
+                const cJSON* item = cJSON_GetArrayItem(temp[0], i);
                 if (item == NULL || !cJSON_IsString(item)) {
                     return false;
                 }

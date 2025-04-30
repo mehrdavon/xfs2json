@@ -1,9 +1,11 @@
 #include "xfs.h"
 #include "util/binary_reader.h"
+#include "util/binary_writer.h"
 
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+
 
 #define XFS_ERROR(...) \
     fprintf(stderr, __VA_ARGS__); \
@@ -13,6 +15,10 @@
 
 static xfs_object* xfs_load_object(xfs* xfs, binary_reader* r);
 static bool xfs_load_data(xfs* xfs, xfs_type_t type, xfs_data* data, binary_reader* r);
+
+static bool xfs_save_object(const xfs_object* obj, binary_writer* w);
+static bool xfs_save_data(const xfs_data* data, xfs_type_t type, binary_writer* w);
+
 static void xfs_free_object(xfs_object* obj);
 static void xfs_free_field(xfs_field* field);
 static void xfs_free_data(xfs_type_t type, xfs_data* data);
@@ -60,6 +66,33 @@ int xfs_load(const char* path, xfs* xfs) {
     if (xfs->root == NULL) {
         XFS_ERROR("Failed to load root object\n");
     }
+
+    binary_reader_destroy(reader);
+
+    return XFS_RESULT_OK;
+}
+
+int xfs_save(const char* path, const xfs* xfs) {
+    if (path == NULL || xfs == NULL) {
+        return XFS_RESULT_ERROR;
+    }
+
+    binary_writer* writer = binary_writer_create(path);
+    if (writer == NULL) {
+        fprintf(stderr, "Failed to create binary writer for XFS file: %s\n", path);
+        return XFS_RESULT_ERROR;
+    }
+
+    binary_writer_write(writer, &xfs->header, sizeof(xfs_header));
+    binary_writer_write(writer, xfs->data, xfs->header.def_size);
+
+    if (!xfs_save_object(xfs->root, writer)) {
+        fprintf(stderr, "Failed to save XFS object\n");
+        binary_writer_destroy(writer);
+        return XFS_RESULT_ERROR;
+    }
+
+    binary_writer_destroy(writer);
 
     return XFS_RESULT_OK;
 }
@@ -162,6 +195,7 @@ static xfs_object* xfs_load_object(xfs* xfs, binary_reader* r) {
 
     obj->def = xfs->defs[ref.class_id >> 1];
     obj->def_id = ref.class_id >> 1;
+    obj->id = ref.var;
     obj->fields = calloc(obj->def->prop_count, sizeof(xfs_field));
 
     if (obj->fields == NULL) {
@@ -263,6 +297,7 @@ bool xfs_load_data(xfs* xfs, xfs_type_t type, xfs_data* data, binary_reader* r) 
         data->value.f64 = binary_reader_read_f64(r);
         break;
     case XFS_TYPE_STRING:
+    case XFS_TYPE_CSTRING:
         if (binary_reader_read_str(r, string_buffer_1, sizeof(string_buffer_1)) != BINARY_READER_OK) {
             fprintf(stderr, "Failed to read XFS string\n");
             return false;
@@ -286,10 +321,10 @@ bool xfs_load_data(xfs* xfs, xfs_type_t type, xfs_data* data, binary_reader* r) 
         data->value.size.h = binary_reader_read_s32(r);
         break;
     case XFS_TYPE_RECT:
-        data->value.rect.t = binary_reader_read_s32(r);
         data->value.rect.l = binary_reader_read_s32(r);
-        data->value.rect.b = binary_reader_read_s32(r);
+        data->value.rect.t = binary_reader_read_s32(r);
         data->value.rect.r = binary_reader_read_s32(r);
+        data->value.rect.b = binary_reader_read_s32(r);
         break;
     case XFS_TYPE_MATRIX:
         binary_reader_read(r, &data->value.matrix, sizeof(xfs_matrix));
@@ -319,18 +354,6 @@ bool xfs_load_data(xfs* xfs, xfs_type_t type, xfs_data* data, binary_reader* r) 
     case XFS_TYPE_EVENT64:
     case XFS_TYPE_END:
         fprintf(stderr, "Unsupported type: %d\n", type);
-        break;
-    case XFS_TYPE_CSTRING:
-        if (binary_reader_read_str(r, string_buffer_1, sizeof(string_buffer_1)) != BINARY_READER_OK) {
-            fprintf(stderr, "Failed to read XFS C-string\n");
-            return false;
-        }
-
-        data->str = _strdup(string_buffer_1);
-        if (data->str == NULL) {
-            fprintf(stderr, "Failed to allocate memory for XFS C-string\n");
-            return false;
-        }
         break;
     case XFS_TYPE_TIME:
         data->value.time.time = binary_reader_read_s64(r);
@@ -476,6 +499,266 @@ bool xfs_load_data(xfs* xfs, xfs_type_t type, xfs_data* data, binary_reader* r) 
             if (data->custom.values[i] == NULL) {
                 fprintf(stderr, "Failed to allocate memory for XFS custom value\n");
                 return false;
+            }
+        }
+        break;
+    }
+
+    return true;
+}
+
+bool xfs_save_object(const xfs_object* obj, binary_writer* w) {
+    if (obj == NULL || w == NULL) {
+        return false;
+    }
+
+    const xfs_class_ref ref = {
+        .class_id = (obj->def_id << 1) | 1,
+        .var = obj->id
+    };
+
+    binary_writer_write(w, &ref, sizeof(xfs_class_ref));
+    binary_writer_write_u32(w, 0); // Placeholder for size, ignored by the game anyway
+
+    for (uint32_t i = 0; i < obj->def->prop_count; i++) {
+        const xfs_property_def* prop = &obj->def->props[i];
+        const xfs_field* field = &obj->fields[i];
+
+        binary_writer_write_s32(w, field->is_array ? field->data.array.count : 1);
+
+        if (field->is_array) {
+            for (uint32_t j = 0; j < field->data.array.count; j++) {
+                if (!xfs_save_data(&field->data.array.entries[j], field->type, w)) {
+                    return false;
+                }
+            }
+        } else {
+            if (!xfs_save_data(&field->data, field->type, w)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool xfs_save_data(const xfs_data* data, xfs_type_t type, binary_writer* w) {
+    switch (type) {
+    case XFS_TYPE_UNDEFINED: break;
+    case XFS_TYPE_CLASS:
+    case XFS_TYPE_CLASSREF:
+        if (data->obj != NULL) {
+            if (!xfs_save_object(data->obj, w)) {
+                return false;
+            }
+        }
+        break;
+    case XFS_TYPE_BOOL:
+        binary_writer_write_bool(w, data->value.b);
+        break;
+    case XFS_TYPE_U8:
+        binary_writer_write_u8(w, data->value.u8);
+        break;
+    case XFS_TYPE_U16:
+        binary_writer_write_u16(w, data->value.u16);
+        break;
+    case XFS_TYPE_U32:
+        binary_writer_write_u32(w, data->value.u32);
+        break;
+    case XFS_TYPE_U64:
+        binary_writer_write_u64(w, data->value.u64);
+        break;
+    case XFS_TYPE_S8:
+        binary_writer_write_s8(w, data->value.s8);
+        break;
+    case XFS_TYPE_S16:
+        binary_writer_write_s16(w, data->value.s16);
+        break;
+    case XFS_TYPE_S32:
+        binary_writer_write_s32(w, data->value.s32);
+        break;
+    case XFS_TYPE_S64:
+        binary_writer_write_s64(w, data->value.s64);
+        break;
+    case XFS_TYPE_F32:
+        binary_writer_write_f32(w, data->value.f32);
+        break;
+    case XFS_TYPE_F64:
+        binary_writer_write_f64(w, data->value.f64);
+        break;
+    case XFS_TYPE_STRING:
+    case XFS_TYPE_CSTRING:
+        if (data->str != NULL) {
+            binary_writer_write_str(w, data->str);
+        } else {
+            binary_writer_write_str(w, "");
+        }
+        break;
+    case XFS_TYPE_COLOR:
+        binary_writer_write_u32(w, data->value.color);
+        break;
+    case XFS_TYPE_POINT:
+        binary_writer_write_s32(w, data->value.point.x);
+        binary_writer_write_s32(w, data->value.point.y);
+        break;
+    case XFS_TYPE_SIZE:
+        binary_writer_write_s32(w, data->value.size.w);
+        binary_writer_write_s32(w, data->value.size.h);
+        break;
+    case XFS_TYPE_RECT:
+        binary_writer_write(w, &data->value.rect, sizeof(xfs_rect));
+        break;
+    case XFS_TYPE_MATRIX:
+        binary_writer_write(w, &data->value.matrix, sizeof(xfs_matrix));
+        break;
+    case XFS_TYPE_VECTOR3:
+        binary_writer_write(w, &data->value.vector3, sizeof(xfs_vector3));
+        break;
+    case XFS_TYPE_VECTOR4:
+        binary_writer_write(w, &data->value.vector4, sizeof(xfs_vector4));
+        break;
+    case XFS_TYPE_QUATERNION:
+        binary_writer_write(w, &data->value.quaternion, sizeof(xfs_quaternion));
+        break;
+    case XFS_TYPE_PROPERTY:
+    case XFS_TYPE_EVENT:
+    case XFS_TYPE_GROUP:
+    case XFS_TYPE_PAGE_BEGIN:
+    case XFS_TYPE_PAGE_END:
+    case XFS_TYPE_EVENT32:
+    case XFS_TYPE_ARRAY:
+    case XFS_TYPE_PROPERTYLIST:
+    case XFS_TYPE_GROUP_END:
+    case XFS_TYPE_ENUMLIST:
+    case XFS_TYPE_OSCILLATOR:
+    case XFS_TYPE_VARIABLE:
+    case XFS_TYPE_RECT3D_COLLISION:
+    case XFS_TYPE_EVENT64:
+    case XFS_TYPE_END:
+        fprintf(stderr, "Unsupported type: %d\n", type);
+        break;
+    case XFS_TYPE_TIME:
+        binary_writer_write_s64(w, data->value.time.time);
+        break;
+    case XFS_TYPE_FLOAT2:
+        binary_writer_write_f32(w, data->value.float2.x);
+        break;
+    case XFS_TYPE_FLOAT3:
+        binary_writer_write(w, &data->value.float3, sizeof(xfs_float3));
+        break;
+    case XFS_TYPE_FLOAT4:
+        binary_writer_write(w, &data->value.float4, sizeof(xfs_float4));
+        break;
+    case XFS_TYPE_FLOAT3x3:
+        binary_writer_write(w, &data->value.float3x3, sizeof(xfs_float3x3));
+        break;
+    case XFS_TYPE_FLOAT4x3:
+        binary_writer_write(w, &data->value.float4x3, sizeof(xfs_float4x3));
+        break;
+    case XFS_TYPE_FLOAT4x4:
+        binary_writer_write(w, &data->value.float4x4, sizeof(xfs_float4x4));
+        break;
+    case XFS_TYPE_EASECURVE:
+        binary_writer_write_f32(w, data->value.easecurve.p1);
+        binary_writer_write_f32(w, data->value.easecurve.p2);
+        break;
+    case XFS_TYPE_LINE:
+        binary_writer_write(w, &data->value.line, sizeof(xfs_line));
+        break;
+    case XFS_TYPE_LINESEGMENT:
+        binary_writer_write(w, &data->value.linesegment, sizeof(xfs_linesegment));
+        break;
+    case XFS_TYPE_RAY:
+        binary_writer_write(w, &data->value.ray, sizeof(xfs_ray));
+        break;
+    case XFS_TYPE_PLANE:
+        binary_writer_write(w, &data->value.plane, sizeof(xfs_plane));
+        break;
+    case XFS_TYPE_SPHERE:
+        binary_writer_write(w, &data->value.sphere, sizeof(xfs_sphere));
+        break;
+    case XFS_TYPE_CAPSULE:
+        binary_writer_write(w, &data->value.capsule, sizeof(xfs_capsule));
+        break;
+    case XFS_TYPE_AABB:
+        binary_writer_write(w, &data->value.aabb, sizeof(xfs_aabb));
+        break;
+    case XFS_TYPE_OBB:
+        binary_writer_write(w, &data->value.obb, sizeof(xfs_obb));
+        break;
+    case XFS_TYPE_CYLINDER:
+        binary_writer_write(w, &data->value.cylinder, sizeof(xfs_cylinder));
+        break;
+    case XFS_TYPE_TRIANGLE:
+        binary_writer_write(w, &data->value.triangle, sizeof(xfs_triangle));
+        break;
+    case XFS_TYPE_CONE:
+        binary_writer_write(w, &data->value.cone, sizeof(xfs_cone));
+        break;
+    case XFS_TYPE_TORUS:
+        binary_writer_write(w, &data->value.torus, sizeof(xfs_torus));
+        break;
+    case XFS_TYPE_ELLIPSOID:
+        binary_writer_write(w, &data->value.ellipsoid, sizeof(xfs_ellipsoid));
+        break;
+    case XFS_TYPE_RANGE:
+        binary_writer_write_s32(w, data->value.range.s);
+        break;
+    case XFS_TYPE_RANGEF:
+        binary_writer_write_f32(w, data->value.rangef.s);
+        break;
+    case XFS_TYPE_RANGEU16:
+        binary_writer_write_u16(w, data->value.rangeu16.s);
+        break;
+    case XFS_TYPE_HERMITECURVE:
+        binary_writer_write(w, &data->value.hermitecurve, sizeof(xfs_hermitecurve));
+        break;
+    case XFS_TYPE_FLOAT3x4:
+        binary_writer_write(w, &data->value.float3x4, sizeof(xfs_float3x4));
+        break;
+    case XFS_TYPE_LINESEGMENT4:
+        binary_writer_write(w, &data->value.linesegment4, sizeof(xfs_linesegment4));
+        break;
+    case XFS_TYPE_AABB4:
+        binary_writer_write(w, &data->value.aabb4, sizeof(xfs_aabb4));
+        break;
+    case XFS_TYPE_VECTOR2:
+        binary_writer_write_f32(w, data->value.vector2.x);
+        binary_writer_write_f32(w, data->value.vector2.y);
+        break;
+    case XFS_TYPE_MATRIX33:
+        binary_writer_write(w, &data->value.matrix33, sizeof(xfs_matrix33));
+        break;
+    case XFS_TYPE_RECT3D_XZ:
+        binary_writer_write(w, &data->value.rect3d_xz, sizeof(xfs_rect3d_xz));
+        break;
+    case XFS_TYPE_RECT3D:
+        binary_writer_write(w, &data->value.rect3d, sizeof(xfs_rect3d));
+        break;
+    case XFS_TYPE_PLANE_XZ:
+        binary_writer_write(w, &data->value.plane_xz, sizeof(xfs_plane_xz));
+        break;
+    case XFS_TYPE_RAY_Y:
+        binary_writer_write(w, &data->value.ray_y, sizeof(xfs_ray_y));
+        break;
+    case XFS_TYPE_POINTF:
+        binary_writer_write_f32(w, data->value.pointf.x);
+        binary_writer_write_f32(w, data->value.pointf.y);
+        break;
+    case XFS_TYPE_SIZEF:
+        binary_writer_write_f32(w, data->value.sizef.w);
+        binary_writer_write_f32(w, data->value.sizef.h);
+        break;
+    case XFS_TYPE_RECTF:
+        binary_writer_write(w, &data->value.rectf, sizeof(xfs_rectf));
+        break;
+    case XFS_TYPE_CUSTOM:
+        binary_writer_write_u8(w, data->custom.count);
+        for (uint8_t i = 0; i < data->custom.count; i++) {
+            if (data->custom.values[i] != NULL) {
+                binary_writer_write_str(w, data->custom.values[i]);
+            } else {
+                binary_writer_write_str(w, "");
             }
         }
         break;

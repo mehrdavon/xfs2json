@@ -86,7 +86,7 @@ bool json2xfs(const char* input, const char* output) {
 
     fread(data, sizeof(char), file_size, file);
 
-    const cJSON* json = cJSON_ParseWithLength(data, file_size);
+    cJSON* json = cJSON_ParseWithLength(data, file_size);
     if (json == NULL) {
         fprintf(stderr, "Failed to parse JSON file: %s\n", input);
         free(data);
@@ -103,14 +103,23 @@ bool json2xfs(const char* input, const char* output) {
         return false;
     }
 
-    // Save xfs
-    // ...
+    if (xfs_save(output, xfs) != XFS_RESULT_OK) {
+        fprintf(stderr, "Failed to save XFS file: %s\n", output);
+        xfs_free(xfs);
+        free(xfs);
+        cJSON_Delete(json);
+        free(data);
+        fclose(file);
+        return false;
+    }
 
     xfs_free(xfs);
     free(xfs);
     cJSON_Delete(json);
     free(data);
     fclose(file);
+
+    fprintf(stdout, "Converted %s to %s\n", input, output);
 
     return true;
 }
