@@ -143,6 +143,7 @@ static xfs_object* xfs_load_object(xfs* xfs, binary_reader* r) {
     }
 
     obj->def = xfs->defs[ref.class_id >> 1];
+    obj->def_id = ref.class_id >> 1;
     obj->fields = calloc(obj->def->prop_count, sizeof(xfs_field));
 
     if (obj->fields == NULL) {

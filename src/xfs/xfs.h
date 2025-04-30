@@ -125,6 +125,7 @@ struct xfs_field;
 
 typedef struct xfs_object {
     xfs_def* def;
+    size_t def_id;
     struct xfs_field* fields; //< Free this
 } xfs_object;
 
