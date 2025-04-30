@@ -7,6 +7,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(SOURCES
     src/main.c
     src/args.c
+    src/util/binary_reader.c
 )
 
 set(ARGPARSE_STATIC ON)
@@ -15,6 +16,7 @@ add_subdirectory(external/argparse)
 
 add_executable(xfs2json ${SOURCES})
 target_include_directories(xfs2json PRIVATE
+    src
     external/argparse
 )
 
