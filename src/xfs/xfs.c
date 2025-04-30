@@ -78,8 +78,6 @@ void xfs_free(xfs* xfs) {
     xfs->data = NULL;
     xfs->defs = NULL;
     xfs->size = 0;
-
-    free(xfs);
 }
 
 static void xfs_free_object(xfs_object* obj) {

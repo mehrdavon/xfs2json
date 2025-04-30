@@ -7,7 +7,6 @@
 #include <argparse.h>
 
 #if defined(_WIN32) || defined(MSC_VER)
-#define _CRT_SECURE_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
