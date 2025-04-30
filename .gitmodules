@@ -3,4 +3,4 @@
 	url = https://github.com/Fexty12573/argparse
 [submodule "external/cJSON"]
 	path = external/cJSON
-	url = https://github.com/DaveGamble/cJSON
+	url = https://github.com/Fexty12573/cJSON

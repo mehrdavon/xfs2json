@@ -36,7 +36,7 @@ bool xfs2json(const char* input, const char* output) {
     }
 
     cJSON* const json = xfs_to_json(&xfs);
-    char* const json_str = cJSON_Print(json);
+    char* const json_str = cJSON_Print(json, 2);
 
     FILE* const file = fopen(output, "w");
     if (file == NULL) {
