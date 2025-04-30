@@ -74,6 +74,25 @@ void xfs_free(xfs* xfs) {
     xfs->size = 0;
 }
 
+bool is_xfs_file(const char* path) {
+    FILE* file = fopen(path, "rb");
+    if (file == NULL) {
+        return false;
+    }
+
+    xfs_header header;
+    if (fread(&header, sizeof(xfs_header), 1, file) != 1) {
+        fclose(file);
+        return false;
+    }
+
+    fclose(file);
+
+    return header.magic == XFS_MAGIC &&
+        header.major_version == XFS_MAJOR_VERSION &&
+        header.minor_version == XFS_MINOR_VERSION;
+}
+
 static void xfs_free_object(xfs_object* obj) {
     if (obj == NULL) {
         return;

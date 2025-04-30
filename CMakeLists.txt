@@ -9,7 +9,8 @@ set(SOURCES
     src/args.c
     src/util/binary_reader.c
     src/xfs/xfs.c
-    src/xfs/converter.c
+    src/xfs/xfs_json.c
+    src/xfs/convert.c
 )
 
 set(ARGPARSE_STATIC ON)

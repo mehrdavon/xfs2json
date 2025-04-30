@@ -1,5 +1,5 @@
 #include "args.h"
-#include "xfs/xfs.h"
+#include "xfs/convert.h"
 
 #include <stdio.h>
 
@@ -9,26 +9,14 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    printf("Input: %s\n", args.input);
-    printf("Output: %s\n", args.output);
-
-    xfs xfs;
-    if (xfs_load(args.input, &xfs) != XFS_RESULT_OK) {
-        printf("Failed to load XFS file: %s\n", args.input);
+    if (!xfs_converter_run(&args)) {
+        fprintf(stderr, "Failed to convert files\n");
         args_free(&args);
         return -1;
     }
 
-    for (int i = 0; i < xfs.header.def_count; i++) {
-        const xfs_def* def = xfs.defs[i];
-        printf("Class ID: %u\n", def->dti_hash);
-        for (int j = 0; j < def->prop_count; j++) {
-            const xfs_property_def* prop = &def->props[j];
-            printf("  Property: %s, Type: %u, Size: %u\n", xfs_get_property_name(&xfs, prop), prop->type, prop->bytes);
-        }
-    }
-
-    xfs_free(&xfs);
+    fprintf(stdout, "Conversion completed successfully\n");
+    args_free(&args);
 
     return 0;
 }

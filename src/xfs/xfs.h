@@ -5,6 +5,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <cJSON.h>
+
 
 #define XFS_MAGIC 0x534658 // "XFS\0"
 #define XFS_MAJOR_VERSION 0x10
@@ -227,6 +229,11 @@ enum {
 
 int xfs_load(const char* path, xfs* xfs);
 void xfs_free(xfs* xfs);
+
+cJSON* xfs_to_json(const xfs* xfs);
+xfs* xfs_from_json(const cJSON* json);
+
+bool is_xfs_file(const char* path);
 
 const char* xfs_get_property_name(xfs* xfs, const xfs_property_def* prop);
 
