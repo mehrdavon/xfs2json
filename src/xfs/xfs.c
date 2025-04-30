@@ -31,7 +31,7 @@ int xfs_load(const char* path, xfs* xfs) {
         return XFS_RESULT_INVALID;
     }
 
-    if (xfs->header.major_version != XFS_MAJOR_VERSION || xfs->header.minor_version != XFS_MINOR_VERSION) {
+    if (xfs->header.major_version != XFS_MAJOR_VERSION) {
         fprintf(stderr, "Unsupported XFS version: %04X-%04X\n", xfs->header.major_version, xfs->header.minor_version);
         binary_reader_destroy(reader);
         return XFS_RESULT_INVALID;
@@ -89,8 +89,7 @@ bool is_xfs_file(const char* path) {
     fclose(file);
 
     return header.magic == XFS_MAGIC &&
-        header.major_version == XFS_MAJOR_VERSION &&
-        header.minor_version == XFS_MINOR_VERSION;
+        header.major_version == XFS_MAJOR_VERSION;
 }
 
 static void xfs_free_object(xfs_object* obj) {

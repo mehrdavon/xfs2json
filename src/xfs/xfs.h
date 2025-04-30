@@ -10,7 +10,6 @@
 
 #define XFS_MAGIC 0x534658 // "XFS\0"
 #define XFS_MAJOR_VERSION 0x10
-#define XFS_MINOR_VERSION 0x1FD
 
 
 typedef enum {
