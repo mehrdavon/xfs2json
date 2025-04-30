@@ -8,6 +8,7 @@ set(SOURCES
     src/main.c
     src/args.c
     src/util/binary_reader.c
+    src/util/binary_writer.c
     src/xfs/xfs.c
     src/xfs/xfs_json.c
     src/xfs/convert.c
