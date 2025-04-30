@@ -39,8 +39,8 @@ cJSON* xfs_to_json(const xfs* xfs) {
         cJSON_AddItemToArray(defs, def_json);
     }
 
-    // Add root object
     cJSON_AddItemToObject(json, "root", xfs_object_to_json(xfs->root));
+    cJSON_AddItemToObject(json, "$defs", defs);
 
     return json;
 }
@@ -56,11 +56,11 @@ cJSON* xfs_object_to_json(const xfs_object* obj) {
 
     cJSON* json = cJSON_CreateObject();
 
-    cJSON_AddNumberToObject(json, "__def_id", obj->def_id);
+    cJSON_AddNumberToObject(json, "$id", obj->def_id);
 
     for (int i = 0; i < obj->def->prop_count; i++) {
         const xfs_field* field = &obj->fields[i];
-
+        
         if (field->is_array) {
             cJSON* items = cJSON_CreateArray();
             for (int j = 0; j < field->data.array.count; j++) {
