@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(xfs2json LANGUAGES C)
-set(CMAKE_C_STANDARD 17)
+set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 set(SOURCES
@@ -9,20 +9,27 @@ set(SOURCES
     src/args.c
     src/util/binary_reader.c
     src/xfs/xfs.c
+    src/xfs/converter.c
 )
 
 set(ARGPARSE_STATIC ON)
 set(ARGPARSE_SHARED OFF)
 add_subdirectory(external/argparse)
 
+set(BUILD_SHARED_LIBS OFF)
+set(CJSON_BUILD_SHARED_LIBS OFF)
+add_subdirectory(external/cJSON)
+
 add_executable(xfs2json ${SOURCES})
 target_include_directories(xfs2json PRIVATE
     src
     external/argparse
+    external/cJSON
 )
 
 target_link_libraries(xfs2json PRIVATE
     argparse_static
+    cjson
 )
 
 if (WIN32)
