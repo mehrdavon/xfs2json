@@ -484,7 +484,7 @@ bool xfs_load_data(xfs* xfs, xfs_type_t type, xfs_data* data, binary_reader* r) 
         break;
     case XFS_TYPE_CUSTOM:
         data->custom.count = binary_reader_read_u8(r);
-        data->custom.values = (const char**)malloc(data->custom.count * sizeof(const char*));
+        data->custom.values = (char**)malloc(data->custom.count * sizeof(char*));
         if (data->custom.values == NULL) {
             fprintf(stderr, "Failed to allocate memory for XFS custom values\n");
             return false;
