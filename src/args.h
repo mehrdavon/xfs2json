@@ -8,8 +8,7 @@ typedef struct Args {
     const char* input;
     const char* output;
 
-    bool input_is_dir;
-    bool output_is_dir;
+    bool is_bulk;
 } Args;
 
 enum {

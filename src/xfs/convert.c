@@ -17,11 +17,9 @@ bool xfs_converter_run(const Args* args) {
         return false;
     }
 
-    if (!args->input_is_dir && !args->output_is_dir) {
+    if (!args->is_bulk) {
         return convert_files(args->input, args->output);
-    }
-
-    if (args->input_is_dir) {
+    } else {
         // Walk directory, convert each file
     }
 
