@@ -27,7 +27,7 @@ enum {
 };
 
 binary_reader* binary_reader_create(const char* path);
-binary_reader* binary_reader_create_buffer(const uint8_t* buffer, size_t size);
+binary_reader* binary_reader_create_buffer(uint8_t* buffer, size_t size);
 void binary_reader_destroy(binary_reader* reader);
 
 size_t binary_reader_seek(binary_reader* reader, int offset, int origin);

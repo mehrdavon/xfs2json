@@ -47,7 +47,7 @@ binary_reader* binary_reader_create(const char* path) {
     return reader;
 }
 
-binary_reader* binary_reader_create_buffer(const uint8_t* buffer, size_t size) {
+binary_reader* binary_reader_create_buffer(uint8_t* buffer, size_t size) {
     binary_reader* reader = malloc(sizeof(binary_reader));
     if (reader == NULL) {
         return NULL;

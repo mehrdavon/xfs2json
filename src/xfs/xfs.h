@@ -105,19 +105,18 @@ typedef struct xfs_header {
 } xfs_header;
 
 typedef struct xfs_property_def {
-    uint32_t name_offset;
-    uint8_t type;
+    char* name; //< Free this
+    xfs_type_t type;
     uint8_t attr;
-    uint16_t bytes : 15;
-    uint16_t disable : 1;
-    uint64_t pad[4];
+    uint16_t bytes;
+    bool disable;
 } xfs_property_def;
 
 typedef struct xfs_def {
     uint32_t dti_hash;
-    uint32_t prop_count : 15;
-    uint32_t : 17;
-    xfs_property_def props[1];
+    uint32_t prop_count : 31;
+    uint32_t init : 1;
+    xfs_property_def* props; //< Free this
 } xfs_def;
 
 typedef struct xfs_class_ref {
@@ -215,12 +214,8 @@ typedef struct xfs_field {
 } xfs_field;
 
 typedef struct xfs {
-    void* data;
-    size_t size;
-
     xfs_header header;
-    xfs_def** defs;
-
+    xfs_def* defs; //< Free this
     xfs_object* root; //< Free this
 } xfs;
 
@@ -238,7 +233,5 @@ cJSON* xfs_to_json(const xfs* xfs);
 xfs* xfs_from_json(const cJSON* json);
 
 bool is_xfs_file(const char* path);
-
-const char* xfs_get_property_name(const xfs* xfs, const xfs_property_def* prop);
 
 #endif // XFS_H

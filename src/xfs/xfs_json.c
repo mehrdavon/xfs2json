@@ -1,4 +1,6 @@
 #include "xfs.h"
+#include "xfs/common.h"
+#include "xfs/v16/arch_32.h"
 #include "util/binary_writer.h"
 
 #include <stdio.h>
@@ -34,7 +36,7 @@ cJSON* xfs_to_json(const xfs* xfs) {
     // Add definitions
     cJSON* defs = cJSON_CreateArray();
     for (int i = 0; i < xfs->header.def_count; i++) {
-        const xfs_def* def = xfs->defs[i];
+        const xfs_def* def = &xfs->defs[i];
         cJSON* def_json = cJSON_CreateObject();
         cJSON_AddNumberToObject(def_json, "dti", def->dti_hash);
 
@@ -43,7 +45,7 @@ cJSON* xfs_to_json(const xfs* xfs) {
             const xfs_property_def* prop = &def->props[j];
             cJSON* prop_json = cJSON_CreateObject();
 
-            cJSON_AddStringToObject(prop_json, "name", xfs_get_property_name(xfs, prop));
+            cJSON_AddStringToObject(prop_json, "name", prop->name);
             cJSON_AddNumberToObject(prop_json, "type", prop->type);
             cJSON_AddNumberToObject(prop_json, "attr", prop->attr);
             cJSON_AddNumberToObject(prop_json, "bytes", prop->bytes);
@@ -58,13 +60,14 @@ cJSON* xfs_to_json(const xfs* xfs) {
 
     cJSON_AddItemToObject(json, "root", xfs_object_to_json(xfs->root));
     cJSON_AddItemToObject(json, "$defs", defs);
-    cJSON_AddNumberToObject(json, "$version", xfs->header.minor_version);
+    cJSON_AddNumberToObject(json, "$major_version", xfs->header.major_version);
+    cJSON_AddNumberToObject(json, "$minor_version", xfs->header.minor_version);
 
     return json;
 }
 
 xfs* xfs_from_json(const cJSON* json) {
-    xfs* xfs = malloc(sizeof(struct xfs));
+    xfs* xfs = calloc(1, sizeof(struct xfs));
     if (xfs == NULL) {
         return NULL;
     }
@@ -83,130 +86,82 @@ xfs* xfs_from_json(const cJSON* json) {
     }
 
     xfs->header.magic = XFS_MAGIC;
-    xfs->header.major_version = XFS_MAJOR_VERSION;
-    xfs->header.minor_version = (uint16_t)cJSON_GetNumberValue(cJSON_GetObjectItem(json, "$version"));
+    xfs->header.major_version = (uint16_t)cJSON_GetNumberValue(cJSON_GetObjectItem(json, "$major_version"));
+    xfs->header.minor_version = (uint16_t)cJSON_GetNumberValue(cJSON_GetObjectItem(json, "$minor_version"));
     xfs->header.class_count = 0; // Will be filled later
     xfs->header.def_count = cJSON_GetArraySize(defs);
 
-    // Compute the size of the 'defs' buffer
-    size_t def_size = 0;
-
-    def_size += sizeof(uint32_t) * xfs->header.def_count;
-    def_size += XFS_DEF_SIZE * xfs->header.def_count;
-
-    size_t prop_count = 0;
-    size_t string_buffer_size = 0;
-
-    for (uint32_t i = 0; i < xfs->header.def_count; i++) {
-        const cJSON* def_json = cJSON_GetArrayItem(defs, i);
-        if (!cJSON_IsObject(def_json)) {
-            free(xfs);
-            return NULL;
-        }
-
-        const cJSON* props = cJSON_GetObjectItem(def_json, "props");
-        if (!cJSON_IsArray(props)) {
-            free(xfs);
-            return NULL;
-        }
-
-        def_size += XFS_PROPERTY_DEF_SIZE * cJSON_GetArraySize(props);
-        prop_count += cJSON_GetArraySize(props);
-
-        for (int j = 0; j < cJSON_GetArraySize(props); j++) {
-            const cJSON* prop_json = cJSON_GetArrayItem(props, j);
-            if (!cJSON_IsObject(prop_json)) {
-                free(xfs);
-                return NULL;
-            }
-
-            const char* name = cJSON_GetStringValue(cJSON_GetObjectItem(prop_json, "name"));
-            string_buffer_size += strlen(name) + 1; // +1 for null terminator
-        }
-    }
-
-    size_t data_size = def_size + string_buffer_size;
-    data_size = (data_size + 3) & ~3; // Align to 4 bytes
-    xfs->header.def_size = (int32_t)data_size;
-
-    xfs->data = malloc(data_size);
-    if (xfs->data == NULL) {
-        free(xfs);
-        return NULL;
-    }
-
-    memset(xfs->data, 0, data_size);
-
-    binary_writer* writer = binary_writer_create_buffer(xfs->data, data_size);
-    if (writer == NULL) {
-        free(xfs->data);
+    xfs->defs = calloc(xfs->header.def_count, sizeof(xfs_def));
+    if (xfs->defs == NULL) {
         free(xfs);
         return NULL;
     }
 
     for (uint32_t i = 0; i < xfs->header.def_count; i++) {
-        binary_writer_write_u32(writer, 0); // Placeholder for offset
-    }
-
-    size_t string_offset = def_size;
-
-    for (uint32_t i = 0; i < xfs->header.def_count; i++) {
         const cJSON* def_json = cJSON_GetArrayItem(defs, i);
         if (!cJSON_IsObject(def_json)) {
-            free(xfs->data);
+            xfs_free(xfs);
             free(xfs);
             return NULL;
         }
 
-        const cJSON* props = cJSON_GetObjectItem(def_json, "props");
-        if (!cJSON_IsArray(props)) {
-            free(xfs->data);
+        const cJSON* props_json = cJSON_GetObjectItem(def_json, "props");
+        if (!cJSON_IsArray(props_json)) {
+            xfs_free(xfs);
             free(xfs);
             return NULL;
         }
 
-        // Write the offset
-        binary_writer_set_u32(writer, i * sizeof(uint32_t), (uint32_t)writer->buffer_pos);
+        xfs_def* def = &xfs->defs[i];
 
-        // Write the data and properties
-        binary_writer_write_u32(writer, (uint32_t)cJSON_GetNumberValue(cJSON_GetObjectItem(def_json, "dti")));
-        binary_writer_write_s32(writer, cJSON_GetArraySize(props));
+        def->dti_hash = (uint32_t)cJSON_GetNumberValue(cJSON_GetObjectItem(def_json, "dti"));
+        def->init = cJSON_HasObjectItem(def_json, "init")
+            ? cJSON_IsTrue(cJSON_GetObjectItem(def_json, "init"))
+            : false;
 
-        for (int j = 0; j < cJSON_GetArraySize(props); j++) {
-            const cJSON* prop_json = cJSON_GetArrayItem(props, j);
+        def->prop_count = (uint32_t)cJSON_GetArraySize(props_json);
+        def->props = calloc(def->prop_count, sizeof(xfs_property_def));
+        if (def->props == NULL) {
+            xfs_free(xfs);
+            free(xfs);
+            return NULL;
+        }
+
+        for (uint32_t j = 0; j < def->prop_count; j++) {
+            const cJSON* prop_json = cJSON_GetArrayItem(props_json, j);
             if (!cJSON_IsObject(prop_json)) {
-                free(xfs->data);
+                xfs_free(xfs);
                 free(xfs);
                 return NULL;
             }
 
+            xfs_property_def* prop = &def->props[j];
+
             const char* name = cJSON_GetStringValue(cJSON_GetObjectItem(prop_json, "name"));
-            const size_t length = strlen(name) + 1; // +1 for null terminator
-            binary_writer_write_u32(writer, (uint32_t)string_offset); // Name offset
-            binary_writer_write_at(writer, string_offset, name, length);
-            string_offset += length;
+            prop->name = strdup(name);
+            if (prop->name == NULL) {
+                xfs_free(xfs);
+                free(xfs);
+                return NULL;
+            }
 
-            binary_writer_write_u8(writer, (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(prop_json, "type")));
-            binary_writer_write_u8(writer, (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(prop_json, "attr")));
-
-            uint16_t bytes = (uint16_t)cJSON_GetNumberValue(cJSON_GetObjectItem(prop_json, "bytes"));
-            bytes |= (uint16_t)cJSON_IsTrue(cJSON_GetObjectItem(prop_json, "disable")) << 15;
-            binary_writer_write_u16(writer, bytes);
-
-            binary_writer_write_u64(writer, 0); // Padding
-            binary_writer_write_u64(writer, 0); // Padding
-            binary_writer_write_u64(writer, 0); // Padding
-            binary_writer_write_u64(writer, 0); // Padding
+            prop->type = (xfs_type_t)cJSON_GetNumberValue(cJSON_GetObjectItem(prop_json, "type"));
+            prop->attr = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(prop_json, "attr"));
+            prop->bytes = (uint16_t)cJSON_GetNumberValue(cJSON_GetObjectItem(prop_json, "bytes"));
+            prop->disable = cJSON_IsTrue(cJSON_GetObjectItem(prop_json, "disable"));
         }
     }
 
-    binary_writer_destroy(writer);
-
-    // Map the defs
-    xfs->defs = (xfs_def**)calloc(xfs->header.def_count, sizeof(xfs_def*));
-    const uint32_t* def_offsets = xfs->data;
-    for (int i = 0; i < xfs->header.def_count; i++) {
-        xfs->defs[i] = (xfs_def*)((uint8_t*)xfs->data + def_offsets[i]);
+    // Calculate the size of the definitions
+    switch (xfs->header.major_version) {
+    case XFS_VERSION_15:
+        break;
+    case XFS_VERSION_16:
+        xfs->header.def_size = (int32_t)xfs_v16_32_get_def_size(xfs, true);
+        break;
+    default:
+        fprintf(stderr, "Unsupported XFS version: %04X-%04X\n", xfs->header.major_version, xfs->header.minor_version);
+        return NULL;
     }
 
     xfs->root = xfs_object_from_json(root, xfs);
@@ -663,7 +618,7 @@ xfs_object* xfs_object_from_json(const cJSON* json, xfs* xfs) {
         return NULL;
     }
 
-    xfs_def* def = xfs->defs[(int)cJSON_GetNumberValue(id_item)];
+    xfs_def* def = &xfs->defs[(int)cJSON_GetNumberValue(id_item)];
     if (def == NULL) {
         return NULL;
     }
@@ -682,7 +637,7 @@ xfs_object* xfs_object_from_json(const cJSON* json, xfs* xfs) {
         xfs_field* field = &obj->fields[i];
         const xfs_property_def* prop = &def->props[i];
 
-        field->name = xfs_get_property_name(xfs, prop);
+        field->name = prop->name;
         field->type = (xfs_type_t)prop->type;
 
         const cJSON* item = cJSON_GetObjectItem(json, field->name);

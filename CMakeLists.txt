@@ -12,6 +12,7 @@ set(SOURCES
     src/xfs/xfs.c
     src/xfs/xfs_json.c
     src/xfs/convert.c
+    src/xfs/v16/arch_32.c
 )
 
 set(ARGPARSE_STATIC ON)
