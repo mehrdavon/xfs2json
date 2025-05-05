@@ -42,7 +42,7 @@ int XFS_NAME(16, 32, load)(binary_reader* r, struct xfs* xfs) {
             d->dti_hash = def->dti_hash;
             d->prop_count = def->prop_count;
             d->init = false;
-            d->props = calloc(d->prop_count, sizeof(xfs_def));
+            d->props = calloc(d->prop_count, sizeof(xfs_property_def));
             if (d->props == NULL) {
                 fprintf(stderr, "Failed to allocate memory for XFS property defs\n");
                 free(buffer);
