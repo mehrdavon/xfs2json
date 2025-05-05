@@ -47,6 +47,21 @@ binary_reader* binary_reader_create(const char* path) {
     return reader;
 }
 
+binary_reader* binary_reader_create_buffer(const uint8_t* buffer, size_t size) {
+    binary_reader* reader = malloc(sizeof(binary_reader));
+    if (reader == NULL) {
+        return NULL;
+    }
+
+    memset(reader, 0, sizeof(binary_reader));
+
+    reader->buffer = buffer;
+    reader->buffer_size = size;
+    reader->size = size;
+
+    return reader;
+}
+
 void binary_reader_destroy(binary_reader* reader) {
     if (reader == NULL) {
         return;
@@ -60,13 +75,30 @@ void binary_reader_destroy(binary_reader* reader) {
 }
 
 size_t binary_reader_seek(binary_reader* reader, int offset, int origin) {
-    if (reader == NULL || reader->file == NULL) {
+    if (reader == NULL) {
         return (size_t)-1;
     }
 
+    if (reader->file == NULL) {
+        switch (origin) {
+        case SEEK_SET:
+            reader->buffer_pos = offset;
+            break;
+        case SEEK_CUR:
+            reader->buffer_pos += offset;
+            break;
+        case SEEK_END:
+            reader->buffer_pos = reader->buffer_size - offset;
+            break;
+        default:
+            break;
+        }
+
+        return reader->buffer_pos;
+    }
+
     if (fseek(reader->file, offset, origin) == 0) {
-        reader->buffer_pos = 0;
-        reader->buffer_size = 0;
+        reader->buffer_pos = reader->buffer_size; // Force a refill
         return ftell(reader->file);
     }
 
@@ -186,8 +218,13 @@ bool binary_reader_read_bool(binary_reader* reader) {
 }
 
 static int binary_reader_refill_buffer(binary_reader* reader) {
-    if (reader == NULL || reader->file == NULL) {
+    if (reader == NULL) {
         return BINARY_READER_ERROR;
+    }
+
+    // file == NULL just means it reads from an in-memory buffer
+    if (reader->file == NULL) {
+        return BINARY_READER_OK;
     }
 
     const size_t remaining_size = reader->buffer_size - reader->buffer_pos;
