@@ -1,5 +1,5 @@
-#ifndef XFS_DEF_32_H
-#define XFS_DEF_32_H
+#ifndef XFS_V16_ARCH_32_H
+#define XFS_V16_ARCH_32_H
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -34,4 +34,4 @@ int XFS_NAME(16, 32, load)(binary_reader* r, struct xfs* xfs);
 size_t XFS_NAME(16, 32, get_def_size)(const struct xfs* xfs, bool include_strings);
 int XFS_NAME(16, 32, save)(binary_writer* w, const struct xfs* xfs);
 
-#endif // XFS_DEF_32_H
+#endif // XFS_V16_ARCH_32_H
