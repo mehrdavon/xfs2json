@@ -128,6 +128,7 @@ int binary_reader_read(binary_reader* reader, void* data, size_t size) {
     if (remaining_size > 0) {
         memcpy(data, reader->buffer + reader->buffer_pos, remaining_size);
         size -= remaining_size;
+        reader->buffer_pos += remaining_size;
         data = (char*)data + remaining_size;
     }
 
