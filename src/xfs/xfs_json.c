@@ -1,7 +1,7 @@
 #include "xfs.h"
 #include "xfs/common.h"
 #include "xfs/v16/arch_32.h"
-#include "util/binary_writer.h"
+#include "xfs/v15/arch_64.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -155,6 +155,7 @@ xfs* xfs_from_json(const cJSON* json) {
     // Calculate the size of the definitions
     switch (xfs->header.major_version) {
     case XFS_VERSION_15:
+        xfs->header.def_size = (int32_t)xfs_v15_64_get_def_size(xfs, true);
         break;
     case XFS_VERSION_16:
         xfs->header.def_size = (int32_t)xfs_v16_32_get_def_size(xfs, true);
@@ -630,8 +631,9 @@ xfs_object* xfs_object_from_json(const cJSON* json, xfs* xfs) {
 
     obj->def = def;
     obj->def_id = (size_t)cJSON_GetNumberValue(id_item);
-
     obj->fields = calloc(def->prop_count, sizeof(xfs_field));
+    obj->id = (int16_t)xfs->header.class_count;
+    xfs->header.class_count++;
 
     for (uint32_t i = 0; i < def->prop_count; i++) {
         xfs_field* field = &obj->fields[i];
@@ -671,9 +673,6 @@ xfs_object* xfs_object_from_json(const cJSON* json, xfs* xfs) {
             }
         }
     }
-
-    obj->id = (int16_t)xfs->header.class_count;
-    xfs->header.class_count++;
 
     return obj;
 }

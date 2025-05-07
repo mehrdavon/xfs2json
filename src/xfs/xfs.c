@@ -3,6 +3,7 @@
 #include "util/binary_writer.h"
 
 #include "xfs/v16/arch_32.h"
+#include "xfs/v15/arch_64.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -18,8 +19,8 @@
 static xfs_object* xfs_load_object(xfs* xfs, binary_reader* r);
 static bool xfs_load_data(xfs* xfs, xfs_type_t type, xfs_data* data, binary_reader* r);
 
-static bool xfs_save_object(const xfs_object* obj, binary_writer* w);
-static bool xfs_save_data(const xfs_data* data, xfs_type_t type, binary_writer* w);
+static bool xfs_save_object(const xfs* xfs, const xfs_object* obj, binary_writer* w);
+static bool xfs_save_data(const xfs * xfs, const xfs_data* data, xfs_type_t type, binary_writer* w);
 
 static void xfs_free_def(xfs_def* def);
 static void xfs_free_property_def(xfs_property_def* prop);
@@ -41,14 +42,12 @@ int xfs_load(const char* path, xfs* xfs) {
         return XFS_RESULT_INVALID;
     }
 
-    if (xfs->header.major_version != XFS_MAJOR_VERSION) {
-        fprintf(stderr, "Unsupported XFS version: %04X-%04X\n", xfs->header.major_version, xfs->header.minor_version);
-        binary_reader_destroy(reader);
-        return XFS_RESULT_INVALID;
-    }
-
     switch (xfs->header.major_version) {
     case XFS_VERSION_15:
+        if (xfs_v15_64_load(reader, xfs) != XFS_RESULT_OK) {
+            binary_reader_destroy(reader);
+            return XFS_RESULT_ERROR;
+        }
         break;
     case XFS_VERSION_16:
         if (xfs_v16_32_load(reader, xfs) != XFS_RESULT_OK) {
@@ -87,6 +86,10 @@ int xfs_save(const char* path, const xfs* xfs) {
     
     switch (xfs->header.major_version) {
     case XFS_VERSION_15:
+        if (xfs_v15_64_save(writer, xfs) != XFS_RESULT_OK) {
+            binary_writer_destroy(writer);
+            return XFS_RESULT_ERROR;
+        }
         break;
     case XFS_VERSION_16:
         if (xfs_v16_32_save(writer, xfs) != XFS_RESULT_OK) {
@@ -100,7 +103,7 @@ int xfs_save(const char* path, const xfs* xfs) {
         return XFS_RESULT_INVALID;
     }
 
-    if (!xfs_save_object(xfs->root, writer)) {
+    if (!xfs_save_object(xfs, xfs->root, writer)) {
         fprintf(stderr, "Failed to save XFS object\n");
         binary_writer_destroy(writer);
         return XFS_RESULT_ERROR;
@@ -224,8 +227,12 @@ static xfs_object* xfs_load_object(xfs* xfs, binary_reader* r) {
         return NULL;
     }
 
-    const uint32_t size = binary_reader_read_u32(r); // Skip the size field
+    const uint32_t size = binary_reader_read_u32(r);
     const size_t start_pos = binary_reader_tell(r);
+
+    if (xfs->header.major_version == XFS_VERSION_15) {
+        (void)binary_reader_read_u32(r);
+    }
 
     for (uint32_t i = 0; i < obj->def->prop_count; i++) {
         const xfs_property_def* prop = &obj->def->props[i];
@@ -236,9 +243,7 @@ static xfs_object* xfs_load_object(xfs* xfs, binary_reader* r) {
         field->is_array = false;
 
         const uint32_t count = binary_reader_read_u32(r);
-        if (count == 0) {
-            field->data.obj = NULL;
-        } else if (count > 1) {
+        if (count == 0 || count > 1) {
             field->is_array = true;
             field->data.array.count = count;
             field->data.array.entries = calloc(count, sizeof(xfs_data));
@@ -527,7 +532,7 @@ bool xfs_load_data(xfs* xfs, xfs_type_t type, xfs_data* data, binary_reader* r) 
     return true;
 }
 
-bool xfs_save_object(const xfs_object* obj, binary_writer* w) {
+bool xfs_save_object(const xfs* xfs, const xfs_object* obj, binary_writer* w) {
     if (obj == NULL || w == NULL) {
         return false;
     }
@@ -538,7 +543,13 @@ bool xfs_save_object(const xfs_object* obj, binary_writer* w) {
     };
 
     binary_writer_write(w, &ref, sizeof(xfs_class_ref));
-    binary_writer_write_u32(w, 0); // Placeholder for size, ignored by the game anyway
+
+    const size_t start_pos = binary_writer_tell(w);
+
+    binary_writer_write_u32(w, 0); // Placeholder for size, filled out below
+    if (xfs->header.major_version == XFS_VERSION_15) {
+        binary_writer_write_u32(w, 0); // v15 size is 8 bytes
+    }
 
     for (uint32_t i = 0; i < obj->def->prop_count; i++) {
         const xfs_property_def* prop = &obj->def->props[i];
@@ -548,27 +559,44 @@ bool xfs_save_object(const xfs_object* obj, binary_writer* w) {
 
         if (field->is_array) {
             for (uint32_t j = 0; j < field->data.array.count; j++) {
-                if (!xfs_save_data(&field->data.array.entries[j], field->type, w)) {
+                if (!xfs_save_data(xfs, &field->data.array.entries[j], field->type, w)) {
                     return false;
                 }
             }
         } else {
-            if (!xfs_save_data(&field->data, field->type, w)) {
+            if (!xfs_save_data(xfs, &field->data, field->type, w)) {
                 return false;
             }
         }
     }
 
+    const size_t end_pos = binary_writer_tell(w);
+    const size_t size = end_pos - start_pos;
+    binary_writer_seek(w, (int)start_pos, SEEK_SET);
+
+    switch (xfs->header.major_version) {
+    case XFS_VERSION_15:
+        binary_writer_write_u64(w, size);
+        break;
+    case XFS_VERSION_16:
+        binary_writer_write_u32(w, (uint32_t)size);
+        break;
+    default:
+        break; // Should not happen
+    }
+
+    binary_writer_seek(w, (int)end_pos, SEEK_SET);
+
     return true;
 }
 
-bool xfs_save_data(const xfs_data* data, xfs_type_t type, binary_writer* w) {
+bool xfs_save_data(const xfs* xfs, const xfs_data* data, xfs_type_t type, binary_writer* w) {
     switch (type) {
     case XFS_TYPE_UNDEFINED: break;
     case XFS_TYPE_CLASS:
     case XFS_TYPE_CLASSREF:
         if (data->obj != NULL) {
-            if (!xfs_save_object(data->obj, w)) {
+            if (!xfs_save_object(xfs, data->obj, w)) {
                 return false;
             }
         }

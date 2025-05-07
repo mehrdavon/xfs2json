@@ -7,12 +7,7 @@
 #include <stdbool.h>
 #include <cJSON.h>
 
-
 #define XFS_MAGIC 0x534658 // "XFS\0"
-#define XFS_MAJOR_VERSION 0x10
-
-#define XFS_DEF_SIZE 8
-#define XFS_PROPERTY_DEF_SIZE 40
 
 
 typedef enum {
