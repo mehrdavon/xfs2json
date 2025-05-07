@@ -26,6 +26,9 @@ binary_writer* binary_writer_create(const char* path);
 binary_writer* binary_writer_create_buffer(uint8_t* buffer, size_t size);
 void binary_writer_destroy(binary_writer* writer);
 
+size_t binary_writer_tell(binary_writer* writer);
+size_t binary_writer_seek(binary_writer* writer, int offset, int origin);
+
 void binary_writer_write(binary_writer* writer, const void* data, size_t size);
 void binary_writer_write_str(binary_writer* writer, const char* str);
 void binary_writer_write_u8(binary_writer* writer, uint8_t value);
@@ -41,6 +44,7 @@ void binary_writer_write_f64(binary_writer* writer, double value);
 void binary_writer_write_bool(binary_writer* writer, bool value);
 
 void binary_writer_set_u32(binary_writer* writer, size_t offset, uint32_t value);
+void binary_writer_set_u64(binary_writer* writer, size_t offset, uint64_t value);
 void binary_writer_write_at(binary_writer* writer, size_t offset, const void* data, size_t size);
 
 #endif // BINARY_WRITER_H

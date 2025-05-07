@@ -71,6 +71,49 @@ void binary_writer_destroy(binary_writer* writer) {
     free(writer);
 }
 
+size_t binary_writer_tell(binary_writer* writer) {
+    if (writer == NULL) {
+        return (size_t)-1;
+    }
+
+    if (writer->file == NULL) {
+        return writer->buffer_pos;
+    }
+
+    return ftell(writer->file) + writer->buffer_pos;
+}
+
+size_t binary_writer_seek(binary_writer* writer, int offset, int origin) {
+    if (writer == NULL) {
+        return (size_t)-1;
+    }
+
+    if (writer->file == NULL) {
+        switch (origin) {
+        case SEEK_SET:
+            writer->buffer_pos = offset;
+            break;
+        case SEEK_CUR:
+            writer->buffer_pos += offset;
+            break;
+        case SEEK_END:
+            writer->buffer_pos = writer->buffer_size - offset;
+            break;
+        default:
+            return (size_t)-1;
+        }
+
+        return writer->buffer_pos;
+    }
+
+    binary_writer_flush(writer);
+    if (fseek(writer->file, offset, origin) == 0) {
+        return ftell(writer->file);
+    }
+
+    return (size_t)-1;
+}
+
 void binary_writer_write(binary_writer* writer, const void* data, size_t size) {
     if (data == NULL || size == 0) {
         return;
@@ -152,6 +195,10 @@ void binary_writer_write_bool(binary_writer* writer, bool value) {
 
 void binary_writer_set_u32(binary_writer* writer, size_t offset, uint32_t value) {
     *(uint32_t*)(writer->buffer + offset) = value;
+}
+
+void binary_writer_set_u64(binary_writer* writer, size_t offset, uint64_t value) {
+    *(uint64_t*)(writer->buffer + offset) = value;
 }
 
 void binary_writer_write_at(binary_writer* writer, size_t offset, const void* data, size_t size) {
