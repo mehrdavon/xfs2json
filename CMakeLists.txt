@@ -3,6 +3,8 @@ cmake_minimum_required(VERSION 3.20)
 project(xfs2json LANGUAGES C)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+cmake_policy(SET CMP0077 NEW)
 
 set(SOURCES
     src/main.c
