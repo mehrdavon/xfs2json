@@ -28,6 +28,70 @@ static void xfs_free_object(xfs_object* obj);
 static void xfs_free_field(xfs_field* field);
 static void xfs_free_data(xfs_type_t type, xfs_data* data);
 
+// Detect if a v15 file is actually a hybrid v16 structure
+static bool detect_hybrid_structure(binary_reader* reader, xfs* xfs) {
+    if (xfs->header.major_version != XFS_VERSION_15) {
+        return false;
+    }
+    
+    // Save current position
+    size_t pos = binary_reader_tell(reader);
+    
+    // Read all definition offsets
+    uint32_t* offsets_32 = calloc(xfs->header.def_count * 2, sizeof(uint32_t));
+    binary_reader_read(reader, offsets_32, xfs->header.def_count * 2 * sizeof(uint32_t));
+    
+    // Check if this looks like v16 structure (32-bit offsets with 32-bit padding)
+    // In v16 hybrid files, every other 32-bit value should be 0 (padding)
+    bool looks_like_v16 = true;
+    for (uint32_t i = 0; i < xfs->header.def_count; i++) {
+        uint32_t offset_low = offsets_32[i * 2];
+        uint32_t offset_high = offsets_32[i * 2 + 1];
+        
+        // In v16 hybrid, high should always be 0
+        if (offset_high != 0) {
+            looks_like_v16 = false;
+            break;
+        }
+        
+        // Offset should be within definition size
+        if (offset_low > 0 && offset_low >= xfs->header.def_size) {
+            looks_like_v16 = false;
+            break;
+        }
+    }
+    
+    if (looks_like_v16 && offsets_32[0] > 0) {
+        // Further verify by checking the structure at first definition
+        // Note: offsets are relative to the start of definition data (after header)
+        binary_reader_seek(reader, sizeof(xfs_header) + offsets_32[0], SEEK_SET);
+        
+        uint32_t dti_hash;
+        uint32_t prop_count_field;
+        binary_reader_read(reader, &dti_hash, sizeof(uint32_t));
+        binary_reader_read(reader, &prop_count_field, sizeof(uint32_t));
+        
+        uint32_t prop_count = prop_count_field & 0x7FFF;
+        
+        // Check if prop_count is reasonable
+        if (prop_count > 0 && prop_count < 1000) {
+            // Try to read first property as v16 structure
+            uint32_t name_offset;
+            binary_reader_read(reader, &name_offset, sizeof(uint32_t));
+            
+            if (name_offset > 0 && name_offset < xfs->header.def_size) {
+                free(offsets_32);
+                binary_reader_seek(reader, pos, SEEK_SET);
+                return true; // This is a v16 hybrid
+            }
+        }
+    }
+    
+    free(offsets_32);
+    binary_reader_seek(reader, pos, SEEK_SET);
+    return false;
+}
+
 int xfs_load(const char* path, xfs* xfs) {
     if (path == NULL || xfs == NULL) {
         return XFS_RESULT_ERROR;
@@ -42,14 +106,30 @@ int xfs_load(const char* path, xfs* xfs) {
         return XFS_RESULT_INVALID;
     }
 
+    // Detect actual structure type
+    bool is_hybrid = detect_hybrid_structure(reader, xfs);
+    
     switch (xfs->header.major_version) {
     case XFS_VERSION_15:
-        if (xfs_v15_64_load(reader, xfs) != XFS_RESULT_OK) {
-            binary_reader_destroy(reader);
-            return XFS_RESULT_ERROR;
+        if (is_hybrid) {
+            // This is a hybrid file - v15 header but v16 structure
+            printf("Detected hybrid v15/v16 structure\n");
+            xfs->actual_structure = XFS_STRUCTURE_V16_HYBRID;
+            if (xfs_v16_32_load(reader, xfs) != XFS_RESULT_OK) {
+                binary_reader_destroy(reader);
+                return XFS_RESULT_ERROR;
+            }
+        } else {
+            // True v15 file
+            xfs->actual_structure = XFS_STRUCTURE_V15_64BIT;
+            if (xfs_v15_64_load(reader, xfs) != XFS_RESULT_OK) {
+                binary_reader_destroy(reader);
+                return XFS_RESULT_ERROR;
+            }
         }
         break;
     case XFS_VERSION_16:
+        xfs->actual_structure = XFS_STRUCTURE_V16_32BIT;
         if (xfs_v16_32_load(reader, xfs) != XFS_RESULT_OK) {
             binary_reader_destroy(reader);
             return XFS_RESULT_ERROR;
@@ -84,23 +164,43 @@ int xfs_save(const char* path, const xfs* xfs) {
 
     binary_writer_write(writer, &xfs->header, sizeof(xfs_header));
     
-    switch (xfs->header.major_version) {
-    case XFS_VERSION_15:
+    // Use detected structure instead of header version for saving
+    switch (xfs->actual_structure) {
+    case XFS_STRUCTURE_V15_64BIT:
         if (xfs_v15_64_save(writer, xfs) != XFS_RESULT_OK) {
             binary_writer_destroy(writer);
             return XFS_RESULT_ERROR;
         }
         break;
-    case XFS_VERSION_16:
+    case XFS_STRUCTURE_V16_32BIT:
+    case XFS_STRUCTURE_V16_HYBRID:
+        // Both v16 structures use the same save format
         if (xfs_v16_32_save(writer, xfs) != XFS_RESULT_OK) {
             binary_writer_destroy(writer);
             return XFS_RESULT_ERROR;
         }
         break;
+    case XFS_STRUCTURE_UNKNOWN:
     default:
-        fprintf(stderr, "Unsupported XFS version: %04X-%04X\n", xfs->header.major_version, xfs->header.minor_version);
-        binary_writer_destroy(writer);
-        return XFS_RESULT_INVALID;
+        // Fall back to version-based if detection failed
+        switch (xfs->header.major_version) {
+        case XFS_VERSION_15:
+            if (xfs_v15_64_save(writer, xfs) != XFS_RESULT_OK) {
+                binary_writer_destroy(writer);
+                return XFS_RESULT_ERROR;
+            }
+            break;
+        case XFS_VERSION_16:
+            if (xfs_v16_32_save(writer, xfs) != XFS_RESULT_OK) {
+                binary_writer_destroy(writer);
+                return XFS_RESULT_ERROR;
+            }
+            break;
+        default:
+            fprintf(stderr, "Unsupported XFS version: %04X-%04X\n", xfs->header.major_version, xfs->header.minor_version);
+            binary_writer_destroy(writer);
+            return XFS_RESULT_INVALID;
+        }
     }
 
     if (!xfs_save_object(xfs, xfs->root, writer)) {

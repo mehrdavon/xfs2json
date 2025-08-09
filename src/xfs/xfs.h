@@ -111,6 +111,7 @@ typedef struct xfs_def {
     uint32_t dti_hash;
     uint32_t prop_count : 31;
     uint32_t init : 1;
+    uint8_t raw_header[16]; // Preserve raw header bytes for byte-identical round-trip
     xfs_property_def* props; //< Free this
 } xfs_def;
 
@@ -208,10 +209,18 @@ typedef struct xfs_field {
     xfs_data data;
 } xfs_field;
 
+typedef enum {
+    XFS_STRUCTURE_UNKNOWN = 0,
+    XFS_STRUCTURE_V15_64BIT = 1,
+    XFS_STRUCTURE_V16_32BIT = 2,
+    XFS_STRUCTURE_V16_HYBRID = 3  // v16 structure with v15 header
+} xfs_structure_type;
+
 typedef struct xfs {
     xfs_header header;
     xfs_def* defs; //< Free this
     xfs_object* root; //< Free this
+    xfs_structure_type actual_structure; //< Detected structure type for hybrid support
 } xfs;
 
 enum {

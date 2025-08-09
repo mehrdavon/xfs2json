@@ -39,6 +39,14 @@ cJSON* xfs_to_json(const xfs* xfs) {
         const xfs_def* def = &xfs->defs[i];
         cJSON* def_json = cJSON_CreateObject();
         cJSON_AddNumberToObject(def_json, "dti", def->dti_hash);
+        
+        // Add raw header as hex string for perfect round-trip
+        char raw_header_hex[33];
+        for(int k = 0; k < 16; k++) {
+            sprintf(raw_header_hex + k*2, "%02x", def->raw_header[k]);
+        }
+        raw_header_hex[32] = '\0';
+        cJSON_AddStringToObject(def_json, "raw_header", raw_header_hex);
 
         cJSON* props = cJSON_CreateArray();
         for (int j = 0; j < def->prop_count; j++) {
@@ -118,6 +126,17 @@ xfs* xfs_from_json(const cJSON* json) {
         def->init = cJSON_HasObjectItem(def_json, "init")
             ? cJSON_IsTrue(cJSON_GetObjectItem(def_json, "init"))
             : false;
+        
+        // Restore raw header from hex string
+        const char* raw_header_hex = cJSON_GetStringValue(cJSON_GetObjectItem(def_json, "raw_header"));
+        if (raw_header_hex && strlen(raw_header_hex) == 32) {
+            for(int k = 0; k < 16; k++) {
+                char byte_str[3] = {raw_header_hex[k*2], raw_header_hex[k*2+1], '\0'};
+                def->raw_header[k] = (uint8_t)strtol(byte_str, NULL, 16);
+            }
+        } else {
+            memset(def->raw_header, 0, 16);
+        }
 
         def->prop_count = (uint32_t)cJSON_GetArraySize(props_json);
         def->props = calloc(def->prop_count, sizeof(xfs_property_def));

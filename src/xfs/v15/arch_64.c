@@ -35,10 +35,14 @@ int xfs_v15_64_load(binary_reader* r, struct xfs* xfs) {
     }
 
     for (uint32_t i = 0; i < xfs->header.def_count; i++) {
+        xfs_def* d = &xfs->defs[i];
+        
         if (def_offsets[i] != 0) {
             const xfs_v15_64_def* def = (xfs_v15_64_def*)(buffer + def_offsets[i]);
-            xfs_def* d = &xfs->defs[i];
 
+            // Preserve raw header bytes FIRST for perfect round-trip
+            memcpy(d->raw_header, buffer + def_offsets[i], 16);
+            
             d->dti_hash = def->dti_hash;
             d->prop_count = def->prop_count;
             d->init = def->init;
@@ -59,6 +63,9 @@ int xfs_v15_64_load(binary_reader* r, struct xfs* xfs) {
                 p->bytes = prop->bytes;
                 p->disable = prop->disable;
             }
+        } else {
+            // Empty definition - clear raw header
+            memset(d->raw_header, 0, 16);
         }
     }
 
@@ -118,16 +125,9 @@ int xfs_v15_64_save(binary_writer* w, const struct xfs* xfs) {
     for (uint32_t i = 0; i < xfs->header.def_count; i++) {
         const xfs_def* def = &xfs->defs[i];
 
-        const xfs_v15_64_def d = {
-            .dti_hash = def->dti_hash,
-            .pad0 = 0,
-            .prop_count = def->prop_count,
-            .init = def->init,
-            .pad1 = 0,
-        };
-
         binary_writer_set_u64(writer, i * sizeof(uint64_t), writer->buffer_pos);
-        binary_writer_write(writer, &d, sizeof(d));
+        // Write the preserved raw header for perfect round-trip
+        binary_writer_write(writer, def->raw_header, 16);
 
         for (int j = 0; j < def->prop_count; j++) {
             const xfs_property_def* prop = &def->props[j];

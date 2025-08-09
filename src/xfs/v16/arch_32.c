@@ -40,8 +40,14 @@ int xfs_v16_32_load(binary_reader* r, struct xfs* xfs) {
             xfs_def* d = &xfs->defs[i];
 
             d->dti_hash = def->dti_hash;
-            d->prop_count = def->prop_count;
+            // Read the full 32-bit value to preserve padding
+            uint32_t* prop_count_ptr = (uint32_t*)(buffer + def_offsets[i] + 4);
+            uint32_t prop_count_with_padding = *prop_count_ptr;
+            d->prop_count = prop_count_with_padding & 0x7FFF;
             d->init = false;
+            // Preserve raw header bytes for perfect round-trip
+            memcpy(d->raw_header, buffer + def_offsets[i], 8); // v16 header is only 8 bytes
+            memset(d->raw_header + 8, 0, 8); // Clear rest
             d->props = calloc(d->prop_count, sizeof(xfs_property_def));
             if (d->props == NULL) {
                 fprintf(stderr, "Failed to allocate memory for XFS property defs\n");
@@ -119,8 +125,8 @@ int xfs_v16_32_save(binary_writer* w, const struct xfs* xfs) {
         const xfs_def* def = &xfs->defs[i];
 
         binary_writer_set_u32(writer, i * sizeof(uint32_t), (uint32_t)writer->buffer_pos);
-        binary_writer_write_u32(writer, def->dti_hash);
-        binary_writer_write_s32(writer, def->prop_count);
+        // Write the preserved raw header for perfect round-trip
+        binary_writer_write(writer, def->raw_header, 8); // v16 header is 8 bytes
 
         for (int j = 0; j < def->prop_count; j++) {
             const xfs_property_def* prop = &def->props[j];
